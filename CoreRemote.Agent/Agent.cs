@@ -377,7 +377,15 @@ namespace CoreRemote.Agent
 
                     case "webrtc_signal":
                         string signalData = GetJsonValue(jsonMessage, "data");
-                        ProcessControlSignal(signalData);
+                        string sigAction = GetJsonValue(signalData, "action");
+                        if (sigAction == "start_stream" || sigAction == "stop_stream" || sigAction == "lock" || sigAction == "restart" || sigAction == "shutdown")
+                        {
+                            HandleAction(sigAction, signalData);
+                        }
+                        else
+                        {
+                            ProcessControlSignal(signalData);
+                        }
                         break;
 
                     default:

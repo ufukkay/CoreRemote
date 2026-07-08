@@ -428,8 +428,8 @@ if ($icoBase64) {
     [System.IO.File]::WriteAllBytes("$dir\\agent_logo.ico", [System.Convert]::FromBase64String($icoBase64))
 }
 
-$icoArg = if (Test-Path "$dir\\agent_logo.ico") { "/win32icon:`"$dir\\agent_logo.ico`" " } else { "" }
-$cmd = "& `"$csc`" /target:winexe " + $icoArg + "/out:`"$dir\\CoreRemoteAgent.exe`" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll `"$dir\\Agent.cs`""
+$icoArg = if (Test-Path "$dir\\agent_logo.ico") { "/win32icon:\`"$dir\\agent_logo.ico\`" " } else { "" }
+$cmd = "& \`"$csc\`" /target:winexe " + $icoArg + "/out:\`"$dir\\CoreRemoteAgent.exe\`" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll \`"$dir\\Agent.cs\`""
 Invoke-Expression $cmd
 
 if ($LASTEXITCODE -ne 0) {

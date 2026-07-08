@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -35,6 +36,14 @@ namespace CoreRemote.Agent
         private static Form _aboutForm;
         private static Label _statusLabel;
 
+        // ── Advanced Support Features State ──
+        private static Process _cmdProcess;
+        private static StreamWriter _cmdInput;
+        private static bool _audioStreaming = false;
+        private static string _lastClipboardText = "";
+        private static ChatForm _chatForm;
+        private static int _activeMonitorIndex = 0; // Primary monitor default
+
         // ── Win32 APIs for Console Hiding and Input Simulation ──
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetConsoleWindow();
@@ -59,6 +68,19 @@ namespace CoreRemote.Agent
 
         private const int SM_CXSCREEN = 0;
         private const int SM_CYSCREEN = 1;
+
+        // Win32 Input Block & Screen standby APIs
+        [DllImport("user32.dll")]
+        public static extern bool BlockInput(bool fBlockIt);
+
+        [DllImport("user32.dll")]
+        public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);
+
+        private const int WM_SYSCOMMAND = 0x0112;
+        private const int SC_MONITORPOWER = 0xF170;
+        private const int MONITOR_ON = -1;
+        private const int MONITOR_OFF = 2;
+        private const int HWND_BROADCAST = 0xFFFF;
 
         [StructLayout(LayoutKind.Sequential)]
         struct POINT
@@ -145,6 +167,11 @@ namespace CoreRemote.Agent
                 // Run WebSocket background thread
                 Task.Run(() => ConnectLoopAsync());
 
+                // Start clipboard sync watcher
+                Thread clipboardThread = new Thread(ClipboardWatchLoop);
+                clipboardThread.SetApartmentState(ApartmentState.STA);
+                clipboardThread.Start();
+
                 // Initialize System Tray Icon on the main WinForms thread
                 InitializeTray();
 
@@ -210,14 +237,12 @@ namespace CoreRemote.Agent
 
         private static void ShowAboutDialog()
         {
-            // If already open, bring to front
             if (_aboutForm != null && !_aboutForm.IsDisposed)
             {
                 _aboutForm.Activate();
                 return;
             }
 
-            // Design a modern, clean about dialog
             _aboutForm = new Form();
             _aboutForm.Text = TrayTitle + " Bilgisi";
             _aboutForm.Size = new Size(320, 240);
@@ -225,7 +250,7 @@ namespace CoreRemote.Agent
             _aboutForm.MaximizeBox = false;
             _aboutForm.MinimizeBox = false;
             _aboutForm.StartPosition = FormStartPosition.CenterScreen;
-            _aboutForm.BackColor = Color.FromArgb(13, 17, 23); // GitHub background color
+            _aboutForm.BackColor = Color.FromArgb(13, 17, 23);
 
             TableLayoutPanel panel = new TableLayoutPanel();
             panel.Dock = DockStyle.Fill;
@@ -236,7 +261,7 @@ namespace CoreRemote.Agent
             Label titleLabel = new Label();
             titleLabel.Text = TrayTitle;
             titleLabel.Font = new Font("Segoe UI", 14, FontStyle.Bold);
-            titleLabel.ForeColor = Color.FromArgb(88, 166, 255); // Blue Accent
+            titleLabel.ForeColor = Color.FromArgb(88, 166, 255);
             titleLabel.Dock = DockStyle.Fill;
 
             Label versionLabel = new Label();
@@ -287,7 +312,6 @@ namespace CoreRemote.Agent
 
             if (_aboutForm != null && !_aboutForm.IsDisposed)
             {
-                // Invoke UI update if required
                 _aboutForm.Invoke((MethodInvoker)delegate {
                     if (_statusLabel != null)
                     {
@@ -330,6 +354,8 @@ namespace CoreRemote.Agent
                 }
 
                 UpdateTrayStatus(false);
+                CleanupTerminal();
+                StopAudioStream();
 
                 if (connectFailed)
                 {
@@ -341,18 +367,37 @@ namespace CoreRemote.Agent
 
         private static async Task ReceiveLoopAsync()
         {
-            byte[] buffer = new byte[8192];
-            while (_ws.State == WebSocketState.Open)
-            {
-                var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", _cts.Token);
-                    break;
-                }
+            byte[] buffer = new byte[65536]; // Support larger JSON packets
+            MemoryStream ms = new MemoryStream();
 
-                string messageStr = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                await ProcessServerMessageAsync(messageStr);
+            try
+            {
+                while (_ws.State == WebSocketState.Open)
+                {
+                    var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", _cts.Token);
+                        break;
+                    }
+
+                    ms.Write(buffer, 0, result.Count);
+
+                    if (result.EndOfMessage)
+                    {
+                        string messageStr = Encoding.UTF8.GetString(ms.ToArray());
+                        ms.SetLength(0); // Reset buffer
+                        await ProcessServerMessageAsync(messageStr);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Receive loop error: " + ex.Message);
+            }
+            finally
+            {
+                ms.Dispose();
             }
         }
 
@@ -361,24 +406,20 @@ namespace CoreRemote.Agent
             try
             {
                 string type = GetJsonValue(jsonMessage, "type");
-                
-                Console.WriteLine("Received message type: " + type);
 
                 switch (type)
                 {
-                    case "request_telemetry":
-                        await SendTelemetryAsync();
-                        break;
-
-                    case "trigger_update":
-                        string updateUrl = GetJsonValue(jsonMessage, "url");
-                        var unused = Task.Run(async () => await TriggerUpdateAsync(updateUrl));
-                        break;
-
                     case "webrtc_signal":
                         string signalData = GetJsonValue(jsonMessage, "data");
                         string sigAction = GetJsonValue(signalData, "action");
-                        if (sigAction == "start_stream" || sigAction == "stop_stream" || sigAction == "lock" || sigAction == "restart" || sigAction == "shutdown")
+                        
+                        // Route control commands to HandleAction, raw mouse/keyboard events to ProcessControlSignal
+                        if (sigAction == "start_stream" || sigAction == "stop_stream" || 
+                            sigAction == "lock" || sigAction == "restart" || sigAction == "shutdown" ||
+                            sigAction == "select_monitor" || sigAction == "block_input" || sigAction == "blank_screen" ||
+                            sigAction == "term_cmd" || sigAction == "list_processes" || sigAction == "kill_process" ||
+                            sigAction == "list_files" || sigAction == "download_file" || sigAction == "chat_msg" ||
+                            sigAction == "elevate_uac" || sigAction == "audio_stream" || sigAction == "clipboard_sync")
                         {
                             HandleAction(sigAction, signalData);
                         }
@@ -388,11 +429,29 @@ namespace CoreRemote.Agent
                         }
                         break;
 
-                    default:
-                        string action = GetJsonValue(jsonMessage, "action");
-                        if (!string.IsNullOrEmpty(action))
+                    case "request_telemetry":
+                        await SendTelemetryAsync();
+                        break;
+
+                    case "trigger_update":
+                        string updateUrl = GetJsonValue(jsonMessage, "url");
+                        var unused = Task.Run(async () => await TriggerUpdateAsync(updateUrl));
+                        break;
+
+                    case "file_chunk":
+                        // Handle inbound file upload chunk from technician
+                        string fileName = GetJsonValue(jsonMessage, "name");
+                        string base64Data = GetJsonValue(jsonMessage, "bytes");
+                        bool isFirst = GetJsonValue(jsonMessage, "isFirst").ToLower() == "true";
+                        
+                        byte[] fileBytes = Convert.FromBase64String(base64Data);
+                        string downloadDir = @"C:\ProgramData\CoreRemote\Downloads";
+                        if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
+                        string filePath = Path.Combine(downloadDir, fileName);
+
+                        using (FileStream fs = new FileStream(filePath, isFirst ? FileMode.Create : FileMode.Append, FileAccess.Write))
                         {
-                            HandleAction(action, jsonMessage);
+                            fs.Write(fileBytes, 0, fileBytes.Length);
                         }
                         break;
                 }
@@ -440,9 +499,97 @@ namespace CoreRemote.Agent
                     Process.Start("shutdown.exe", "-s -t 0");
                     break;
 
-                case "input":
-                    string inputData = GetJsonValue(fullMessage, "data");
-                    ProcessControlSignal(inputData);
+                case "select_monitor":
+                    string monitorIdxStr = GetJsonValue(fullMessage, "index");
+                    int mIdx;
+                    if (int.TryParse(monitorIdxStr, out mIdx) && mIdx >= 0 && mIdx < Screen.AllScreens.Length)
+                    {
+                        _activeMonitorIndex = mIdx;
+                        Console.WriteLine("Active monitor switched to index: " + mIdx);
+                    }
+                    break;
+
+                case "block_input":
+                    bool blockVal = GetJsonValue(fullMessage, "block").ToLower() == "true";
+                    BlockInput(blockVal);
+                    Console.WriteLine("Physical inputs blocked: " + blockVal);
+                    break;
+
+                case "blank_screen":
+                    bool blankVal = GetJsonValue(fullMessage, "blank").ToLower() == "true";
+                    if (blankVal)
+                    {
+                        BlockInput(true); // Lock physical movement so screen won't wake up
+                        SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_OFF);
+                    }
+                    else
+                    {
+                        BlockInput(false);
+                        SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_ON);
+                    }
+                    Console.WriteLine("Physical monitor blanked: " + blankVal);
+                    break;
+
+                case "term_cmd":
+                    string termCommand = GetJsonValue(fullMessage, "cmd");
+                    InitializeTerminal();
+                    if (_cmdInput != null)
+                    {
+                        _cmdInput.WriteLine(termCommand);
+                    }
+                    break;
+
+                case "list_processes":
+                    SendProcessList();
+                    break;
+
+                case "kill_process":
+                    int pidToKill = int.Parse(GetJsonValue(fullMessage, "pid"));
+                    try
+                    {
+                        Process.GetProcessById(pidToKill).Kill();
+                        SendProcessList(); // Resend updated list
+                    }
+                    catch (Exception ex)
+                    {
+                        SendControlMessageAsync("term_output", "Process sonlandırılamadı: " + ex.Message);
+                    }
+                    break;
+
+                case "list_files":
+                    string dirPath = GetJsonValue(fullMessage, "path");
+                    SendFileList(dirPath);
+                    break;
+
+                case "download_file":
+                    string dlFilePath = GetJsonValue(fullMessage, "path");
+                    Task.Run(() => StreamFileToTechnician(dlFilePath));
+                    break;
+
+                case "chat_msg":
+                    string chatText = GetJsonValue(fullMessage, "text");
+                    ShowChatForm(chatText, false);
+                    break;
+
+                case "elevate_uac":
+                    ElevateProcess();
+                    break;
+
+                case "audio_stream":
+                    bool enableAudio = GetJsonValue(fullMessage, "enable").ToLower() == "true";
+                    if (enableAudio)
+                    {
+                        StartAudioStream();
+                    }
+                    else
+                    {
+                        StopAudioStream();
+                    }
+                    break;
+
+                case "clipboard_sync":
+                    string clipText = GetJsonValue(fullMessage, "text");
+                    SetLocalClipboardText(clipText);
                     break;
             }
         }
@@ -479,15 +626,24 @@ namespace CoreRemote.Agent
         {
             try
             {
-                int width = GetSystemMetrics(SM_CXSCREEN);
-                int height = GetSystemMetrics(SM_CYSCREEN);
+                // Multi-monitor support: select screen coordinates dynamically
+                Screen activeScreen = Screen.PrimaryScreen;
+                if (_activeMonitorIndex >= 0 && _activeMonitorIndex < Screen.AllScreens.Length)
+                {
+                    activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                }
+
+                int width = activeScreen.Bounds.Width;
+                int height = activeScreen.Bounds.Height;
+                int left = activeScreen.Bounds.Left;
+                int top = activeScreen.Bounds.Top;
 
                 using (Bitmap bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb))
                 {
                     using (Graphics g = Graphics.FromImage(bmp))
                     {
-                        g.CopyFromScreen(0, 0, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
-                        DrawMouseCursor(g);
+                        g.CopyFromScreen(left, top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
+                        DrawMouseCursor(g, left, top);
                     }
 
                     using (MemoryStream ms = new MemoryStream())
@@ -510,15 +666,18 @@ namespace CoreRemote.Agent
             }
         }
 
-        private static void DrawMouseCursor(Graphics g)
+        private static void DrawMouseCursor(Graphics g, int screenLeft, int screenTop)
         {
             try
             {
                 POINT p;
                 if (GetCursorPos(out p))
                 {
-                    g.FillEllipse(Brushes.Red, p.X, p.Y, 10, 10);
-                    g.DrawEllipse(Pens.White, p.X, p.Y, 10, 10);
+                    // Offset by screen left/top for multi-monitor layout mapping
+                    int relativeX = p.X - screenLeft;
+                    int relativeY = p.Y - screenTop;
+                    g.FillEllipse(Brushes.Red, relativeX, relativeY, 10, 10);
+                    g.DrawEllipse(Pens.White, relativeX, relativeY, 10, 10);
                 }
             }
             catch {}
@@ -537,6 +696,330 @@ namespace CoreRemote.Agent
             return null;
         }
 
+        // ── INTERACTIVE TERMINAL (cmd.exe) REDIRECT ─────────────────────────
+        private static void InitializeTerminal()
+        {
+            if (_cmdProcess != null && !_cmdProcess.HasExited) return;
+
+            try
+            {
+                _cmdProcess = new Process();
+                _cmdProcess.StartInfo.FileName = "cmd.exe";
+                _cmdProcess.StartInfo.RedirectStandardInput = true;
+                _cmdProcess.StartInfo.RedirectStandardOutput = true;
+                _cmdProcess.StartInfo.RedirectStandardError = true;
+                _cmdProcess.StartInfo.UseShellExecute = false;
+                _cmdProcess.StartInfo.CreateNoWindow = true;
+
+                _cmdProcess.OutputDataReceived += (s, e) => {
+                    if (e.Data != null) SendControlMessageAsync("term_output", e.Data + "\r\n");
+                };
+                _cmdProcess.ErrorDataReceived += (s, e) => {
+                    if (e.Data != null) SendControlMessageAsync("term_output", e.Data + "\r\n");
+                };
+
+                _cmdProcess.Start();
+                _cmdInput = _cmdProcess.StandardInput;
+                _cmdProcess.BeginOutputReadLine();
+                _cmdProcess.BeginErrorReadLine();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Failed to initialize terminal: " + ex.Message);
+            }
+        }
+
+        private static void CleanupTerminal()
+        {
+            try
+            {
+                if (_cmdProcess != null && !_cmdProcess.HasExited)
+                {
+                    _cmdProcess.Kill();
+                }
+            }
+            catch {}
+            _cmdProcess = null;
+            _cmdInput = null;
+        }
+
+        // ── REMOTE TASK MANAGER API ─────────────────────────────────────────
+        private static void SendProcessList()
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                foreach (var p in Process.GetProcesses())
+                {
+                    try
+                    {
+                        long memMb = p.WorkingSet64 / (1024 * 1024);
+                        sb.Append(p.Id + "|" + p.ProcessName + "|" + memMb + ";");
+                    }
+                    catch {}
+                }
+                SendControlMessageAsync("process_list", sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error listing processes: " + ex.Message);
+            }
+        }
+
+        // ── FILE MANAGER API ────────────────────────────────────────────────
+        private static void SendFileList(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) path = @"C:\";
+                var sb = new StringBuilder();
+
+                // Add directories
+                foreach (var dir in Directory.GetDirectories(path))
+                {
+                    var info = new DirectoryInfo(dir);
+                    sb.Append("DIR|" + info.Name + ";");
+                }
+
+                // Add files
+                foreach (var file in Directory.GetFiles(path))
+                {
+                    var info = new FileInfo(file);
+                    sb.Append("FILE|" + info.Name + "|" + info.Length + ";");
+                }
+
+                SendControlMessageAsync("file_list", sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                SendControlMessageAsync("file_list_error", ex.Message);
+            }
+        }
+
+        private static async Task StreamFileToTechnician(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    SendControlMessageAsync("file_list_error", "Dosya bulunamadı: " + path);
+                    return;
+                }
+
+                string name = Path.GetFileName(path);
+                byte[] buffer = new byte[65536]; // Stream in 64KB chunks
+                int bytesRead;
+
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read))
+                {
+                    while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        byte[] chunk = new byte[bytesRead];
+                        Buffer.BlockCopy(buffer, 0, chunk, 0, bytesRead);
+
+                        string base64Data = Convert.ToBase64String(chunk);
+                        bool isLast = (fs.Position >= fs.Length);
+
+                        string payload = "{" +
+                            "\"type\":\"file_download_chunk\"," +
+                            "\"name\":\"" + EscJ(name) + "\"," +
+                            "\"bytes\":\"" + base64Data + "\"," +
+                            "\"isLast\":" + (isLast ? "true" : "false") +
+                        "}";
+
+                        byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
+                        if (_ws != null && _ws.State == WebSocketState.Open)
+                        {
+                            await _ws.SendAsync(new ArraySegment<byte>(payloadBytes), WebSocketMessageType.Text, true, _cts.Token);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SendControlMessageAsync("file_list_error", "İndirme hatası: " + ex.Message);
+            }
+        }
+
+        // ── CHAT FORM UI ────────────────────────────────────────────────────
+        private static void ShowChatForm(string initialText, bool localMsg)
+        {
+            Application.OpenForms[0].Invoke((MethodInvoker)delegate {
+                if (_chatForm == null || _chatForm.IsDisposed)
+                {
+                    _chatForm = new ChatForm();
+                    _chatForm.MessageSent += (s, msg) => {
+                        SendControlMessageAsync("chat_msg", msg);
+                    };
+                    _chatForm.Show();
+                }
+                _chatForm.AppendMessage(initialText, localMsg);
+            });
+        }
+
+        // ── CLIPBOARD SYNCHRONIZATION ───────────────────────────────────────
+        private static void ClipboardWatchLoop()
+        {
+            while (true)
+            {
+                try
+                {
+                    string currentText = "";
+                    Thread t = new Thread(() => {
+                        try
+                        {
+                            if (Clipboard.ContainsText()) currentText = Clipboard.GetText();
+                        }
+                        catch {}
+                    });
+                    t.SetApartmentState(ApartmentState.STA);
+                    t.Start();
+                    t.Join();
+
+                    if (!string.IsNullOrEmpty(currentText) && currentText != _lastClipboardText)
+                    {
+                        _lastClipboardText = currentText;
+                        SendControlMessageAsync("clipboard_sync", currentText);
+                    }
+                }
+                catch {}
+                Thread.Sleep(1000);
+            }
+        }
+
+        private static void SetLocalClipboardText(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text == _lastClipboardText) return;
+            _lastClipboardText = text;
+
+            Thread t = new Thread(() => {
+                try
+                {
+                    Clipboard.SetText(text);
+                }
+                catch {}
+            });
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+        }
+
+        // ── Win32 / COM LOOPBACK AUDIO STREAMING ────────────────────────────
+        private static void StartAudioStream()
+        {
+            if (_audioStreaming) return;
+            _audioStreaming = true;
+            Task.Run(() => StreamAudioLoop());
+        }
+
+        private static void StopAudioStream()
+        {
+            _audioStreaming = false;
+        }
+
+        private static void StreamAudioLoop()
+        {
+            IntPtr formatPtr = IntPtr.Zero;
+            object deviceEnumeratorObj = null;
+            IMMDeviceEnumerator deviceEnumerator = null;
+            IMMDevice device = null;
+            object audioClientObj = null;
+            IAudioClient audioClient = null;
+            object captureClientObj = null;
+            IAudioCaptureClient captureClient = null;
+
+            try
+            {
+                // Instantiate standard MMDeviceEnumerator COM object
+                deviceEnumeratorObj = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("BCDE0359-8665-41C6-B4B6-83E90C0030C8")));
+                deviceEnumerator = (IMMDeviceEnumerator)deviceEnumeratorObj;
+
+                // Get speaker render output endpoint (0 = eRender, 1 = eConsole)
+                int hr = deviceEnumerator.GetDefaultAudioEndpoint(0, 1, out device);
+                if (hr != 0 || device == null) return;
+
+                // Activate IAudioClient COM interface
+                Guid IID_IAudioClient = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
+                hr = device.Activate(ref IID_IAudioClient, 1 /* CLSCTX_ALL */, IntPtr.Zero, out audioClientObj);
+                if (hr != 0 || audioClientObj == null) return;
+                audioClient = (IAudioClient)audioClientObj;
+
+                // Get speaker mix format
+                hr = audioClient.GetMixFormat(out formatPtr);
+                if (hr != 0 || formatPtr == IntPtr.Zero) return;
+                WAVEFORMATEX format = (WAVEFORMATEX)Marshal.PtrToStructure(formatPtr, typeof(WAVEFORMATEX));
+
+                // Initialize loopback stream
+                Guid sessionGuid = Guid.Empty;
+                hr = audioClient.Initialize(0 /* Shared Mode */, 0x00020000 /* AUDCLNT_STREAMFLAGS_LOOPBACK */, 10000000 /* 1 sec latency */, 0, ref format, ref sessionGuid);
+                if (hr != 0) return;
+
+                // Get AudioCaptureClient service
+                Guid IID_IAudioCaptureClient = new Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
+                hr = audioClient.GetService(ref IID_IAudioCaptureClient, out captureClientObj);
+                if (hr != 0 || captureClientObj == null) return;
+                captureClient = (IAudioCaptureClient)captureClientObj;
+
+                audioClient.Start();
+
+                while (_audioStreaming && _ws.State == WebSocketState.Open)
+                {
+                    captureClient.GetNextPacketSize(out uint packetSize);
+                    if (packetSize > 0)
+                    {
+                        hr = captureClient.GetBuffer(out IntPtr dataPtr, out uint numFrames, out uint flags, out _, out _);
+                        if (hr == 0 && numFrames > 0 && dataPtr != IntPtr.Zero)
+                        {
+                            int dataSize = (int)(numFrames * format.nBlockAlign);
+                            byte[] audioData = new byte[dataSize + 1];
+                            audioData[0] = 0x02; // Binary audio packet identifier
+                            Marshal.Copy(dataPtr, audioData, 1, dataSize);
+                            
+                            captureClient.ReleaseBuffer(numFrames);
+
+                            // Send audio binary data packet asynchronously over WebSocket
+                            _ws.SendAsync(new ArraySegment<byte>(audioData), WebSocketMessageType.Binary, true, _cts.Token).Wait();
+                        }
+                    }
+                    Thread.Sleep(15);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Audio Stream Loop error: " + ex.Message);
+            }
+            finally
+            {
+                if (audioClient != null) audioClient.Stop();
+                if (formatPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(formatPtr);
+                _audioStreaming = false;
+            }
+        }
+
+        // ── UAC PRIVILEGES ELEVATION RESTART ────────────────────────────────
+        private static void ElevateProcess()
+        {
+            try
+            {
+                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = currentExePath,
+                    Verb = "runas",
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                
+                // Terminate non-elevated instance safely
+                if (_trayIcon != null) _trayIcon.Visible = false;
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                SendControlMessageAsync("term_output", "UAC yetki talebi reddedildi: " + ex.Message);
+            }
+        }
+
+        // ── TELEMETRY & HELPER METHODS ──────────────────────────────────────
         private static async Task SendTelemetryAsync()
         {
             try
@@ -548,6 +1031,14 @@ namespace CoreRemote.Agent
                 string ram = GetRamSize();
                 string ipAddress = GetLocalIpAddress();
 
+                // Multi-monitor list extraction
+                var monitorSb = new StringBuilder();
+                for (int i = 0; i < Screen.AllScreens.Length; i++)
+                {
+                    var s = Screen.AllScreens[i];
+                    monitorSb.Append(s.DeviceName + "|" + s.Bounds.Width + "x" + s.Bounds.Height + (s.Primary ? " (Ana)" : "") + ";");
+                }
+
                 string payload = "{" +
                     "\"type\":\"telemetry\"," +
                     "\"data\":{" +
@@ -557,7 +1048,8 @@ namespace CoreRemote.Agent
                         "\"cpu\":\"" + EscJ(cpu) + "\"," +
                         "\"ram\":\"" + EscJ(ram) + "\"," +
                         "\"ipAddress\":\"" + EscJ(ipAddress) + "\"," +
-                        "\"version\":\"" + Version + "\"" +
+                        "\"version\":\"" + Version + "\"," +
+                        "\"monitors\":\"" + EscJ(monitorSb.ToString()) + "\"" +
                     "}" +
                 "}";
 
@@ -571,15 +1063,15 @@ namespace CoreRemote.Agent
             }
         }
 
-        private static async Task SendUpdateStatusAsync(string status, string message)
+        private static async void SendControlMessageAsync(string action, string text)
         {
             try
             {
                 string payload = "{" +
-                    "\"type\":\"update_status\"," +
+                    "\"type\":\"webrtc_signal\"," +
                     "\"data\":{" +
-                        "\"status\":\"" + EscJ(status) + "\"," +
-                        "\"message\":\"" + EscJ(message) + "\"" +
+                        "\"action\":\"" + action + "\"," +
+                        "\"text\":\"" + EscJ(text) + "\"" +
                     "}" +
                 "}";
                 byte[] bytes = Encoding.UTF8.GetBytes(payload);
@@ -588,10 +1080,7 @@ namespace CoreRemote.Agent
                     await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error sending update status: " + ex.Message);
-            }
+            catch {}
         }
 
         private static void ProcessControlSignal(string signalJson)
@@ -601,22 +1090,33 @@ namespace CoreRemote.Agent
                 string action = GetJsonValue(signalJson, "action");
                 if (action == "mousemove")
                 {
-                    double rx = double.Parse(GetJsonValue(signalJson, "x"));
-                    double ry = double.Parse(GetJsonValue(signalJson, "y"));
+                    double rx = double.Parse(GetJsonValue(signalJson, "x"), System.Globalization.CultureInfo.InvariantCulture);
+                    double ry = double.Parse(GetJsonValue(signalJson, "y"), System.Globalization.CultureInfo.InvariantCulture);
 
+                    // Multi-monitor mouse movement coordinate scaling
+                    Screen activeScreen = Screen.PrimaryScreen;
+                    if (_activeMonitorIndex >= 0 && _activeMonitorIndex < Screen.AllScreens.Length)
+                    {
+                        activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                    }
+
+                    int absoluteX = activeScreen.Bounds.Left + (int)(rx * activeScreen.Bounds.Width);
+                    int absoluteY = activeScreen.Bounds.Top + (int)(ry * activeScreen.Bounds.Height);
+
+                    // Map screen relative mouse click onto global absolute coordinates (0-65535)
                     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
                     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-                    int absoluteX = (int)(rx * screenWidth);
-                    int absoluteY = (int)(ry * screenHeight);
+                    double mappedX = (double)absoluteX * 65535.0 / screenWidth;
+                    double mappedY = (double)absoluteY * 65535.0 / screenHeight;
 
                     INPUT[] inputs = new INPUT[1];
                     inputs[0] = new INPUT();
                     inputs[0].type = INPUT_MOUSE;
                     inputs[0].mi = new MOUSEINPUT
                     {
-                        dx = (int)(rx * 65535.0),
-                        dy = (int)(ry * 65535.0),
+                        dx = (int)mappedX,
+                        dy = (int)mappedY,
                         dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
                         mouseData = 0,
                         time = 0,
@@ -705,7 +1205,6 @@ namespace CoreRemote.Agent
                 await SendUpdateStatusAsync("Kuruluyor", "Güncelleme dosyaları hazırlanıyor, ajan yeniden başlatılacak...");
                 Console.WriteLine("Download complete. Generating update script...");
 
-                // Generate self-deleting batch update script with logging
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("@echo off");
                 sb.AppendLine("ping 127.0.0.1 -n 5 > nul");
@@ -728,13 +1227,13 @@ namespace CoreRemote.Agent
                 
                 Process.Start(psi);
                 
-                // Exit current process immediately so it releases file lock
+                if (_trayIcon != null) _trayIcon.Visible = false;
                 Environment.Exit(0);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Update failed: " + ex.Message);
                 errorMessage = ex.Message;
+                Console.WriteLine("Update failed: " + ex.Message);
             }
 
             if (errorMessage != null)
@@ -743,51 +1242,44 @@ namespace CoreRemote.Agent
             }
         }
 
-        private static string GetJsonValue(string json, string key)
+        private static async Task SendUpdateStatusAsync(string status, string message)
         {
-            if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(key)) return "";
-            
-            string searchKey = "\"" + key + "\"";
-            int keyIndex = json.IndexOf(searchKey);
-            if (keyIndex == -1) return "";
-
-            int colonIndex = json.IndexOf(":", keyIndex + searchKey.Length);
-            if (colonIndex == -1) return "";
-
-            int valueStart = colonIndex + 1;
-            while (valueStart < json.Length && (json[valueStart] == ' ' || json[valueStart] == '\t' || json[valueStart] == '\r' || json[valueStart] == '\n'))
+            try
             {
-                valueStart++;
-            }
-
-            if (valueStart >= json.Length) return "";
-
-            if (json[valueStart] == '"')
-            {
-                int stringEnd = json.IndexOf('"', valueStart + 1);
-                if (stringEnd == -1) return "";
-                return json.Substring(valueStart + 1, stringEnd - valueStart - 1);
-            }
-            else if (json[valueStart] == '{')
-            {
-                int bracketCount = 1;
-                int idx = valueStart + 1;
-                while (idx < json.Length && bracketCount > 0)
+                string payload = "{" +
+                    "\"type\":\"update_status\"," +
+                    "\"data\":{" +
+                        "\"status\":\"" + EscJ(status) + "\"," +
+                        "\"message\":\"" + EscJ(message) + "\"" +
+                    "}" +
+                "}";
+                byte[] bytes = Encoding.UTF8.GetBytes(payload);
+                if (_ws != null && _ws.State == WebSocketState.Open)
                 {
-                    if (json[idx] == '{') bracketCount++;
-                    else if (json[idx] == '}') bracketCount--;
-                    idx++;
+                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
                 }
-                return json.Substring(valueStart, idx - valueStart);
             }
-            else
+            catch (Exception ex)
             {
-                int endIdx = valueStart;
-                while (endIdx < json.Length && json[endIdx] != ',' && json[endIdx] != '}' && json[endIdx] != ']')
+                Console.WriteLine("Error sending update status: " + ex.Message);
+            }
+        }
+
+        private static void SetStartup()
+        {
+            try
+            {
+                string appName = "CoreRemoteAgent";
+                string path = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                RegistryKey key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+                if (key != null)
                 {
-                    endIdx++;
+                    key.SetValue(appName, "\"" + path + "\"");
                 }
-                return json.Substring(valueStart, endIdx - valueStart).Trim();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Startup registration failed: " + ex.Message);
             }
         }
 
@@ -825,24 +1317,6 @@ namespace CoreRemote.Agent
             return "Unknown RAM";
         }
 
-        private static void SetStartup()
-        {
-            try
-            {
-                string appName = "CoreRemoteAgent";
-                string path = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
-                if (key != null)
-                {
-                    key.SetValue(appName, "\"" + path + "\"");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Startup registration failed: " + ex.Message);
-            }
-        }
-
         private static string GetLocalIpAddress()
         {
             try
@@ -865,5 +1339,192 @@ namespace CoreRemote.Agent
             if (s == null) return "";
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "").Replace("\t", " ");
         }
+
+        private static string GetJsonValue(string json, string key)
+        {
+            try
+            {
+                string searchKey = "\"" + key + "\"";
+                int keyIdx = json.IndexOf(searchKey);
+                if (keyIdx == -1) return "";
+
+                int colonIdx = json.IndexOf(':', keyIdx + searchKey.Length);
+                if (colonIdx == -1) return "";
+
+                int valueStart = colonIdx + 1;
+                while (valueStart < json.Length && (json[valueStart] == ' ' || json[valueStart] == '\t' || json[valueStart] == '\r' || json[valueStart] == '\n'))
+                {
+                    valueStart++;
+                }
+
+                if (valueStart >= json.Length) return "";
+
+                if (json[valueStart] == '"')
+                {
+                    int stringEnd = json.IndexOf('"', valueStart + 1);
+                    if (stringEnd == -1) return "";
+                    return json.Substring(valueStart + 1, stringEnd - valueStart - 1);
+                }
+                else if (json[valueStart] == '{')
+                {
+                    int bracketCount = 1;
+                    int idx = valueStart + 1;
+                    while (idx < json.Length && bracketCount > 0)
+                    {
+                        if (json[idx] == '{') bracketCount++;
+                        else if (json[idx] == '}') bracketCount--;
+                        idx++;
+                    }
+                    return json.Substring(valueStart, idx - valueStart);
+                }
+                else
+                {
+                    int endIdx = valueStart;
+                    while (endIdx < json.Length && json[endIdx] != ',' && json[endIdx] != '}' && json[endIdx] != ']')
+                    {
+                        endIdx++;
+                    }
+                    return json.Substring(valueStart, endIdx - valueStart).Trim();
+                }
+            }
+            catch
+            {
+                return "";
+            }
+        }
+    }
+
+    // ── LIGHTWEIGHT CLIENT CHAT FORM UI ─────────────────────────────────────
+    public class ChatForm : Form
+    {
+        public event EventHandler<string> MessageSent;
+        private TextBox _chatHistory;
+        private TextBox _chatInput;
+        private Button _sendBtn;
+
+        public ChatForm()
+        {
+            this.Text = "CoreRemote Uzak Destek Sohbeti";
+            this.Size = new Size(350, 450);
+            this.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+            this.TopMost = true;
+            this.StartPosition = FormStartPosition.Manual;
+            this.Location = new Point(Screen.PrimaryScreen.Bounds.Right - 370, Screen.PrimaryScreen.Bounds.Bottom - 490);
+            this.BackColor = Color.FromArgb(13, 17, 23);
+            this.ForeColor = Color.FromArgb(201, 209, 217);
+
+            _chatHistory = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.FromArgb(22, 27, 34),
+                ForeColor = Color.FromArgb(201, 209, 217),
+                BorderStyle = BorderStyle.None,
+                Location = new Point(10, 10),
+                Size = new Size(315, 330),
+                Font = new Font("Segoe UI", 9)
+            };
+
+            _chatInput = new TextBox
+            {
+                Location = new Point(10, 355),
+                Size = new Size(230, 40),
+                BackColor = Color.FromArgb(22, 27, 34),
+                ForeColor = Color.FromArgb(201, 209, 217),
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 9)
+            };
+            _chatInput.KeyDown += (s, e) => {
+                if (e.KeyCode == Keys.Enter) { TriggerSend(); e.SuppressKeyPress = true; }
+            };
+
+            _sendBtn = new Button
+            {
+                Text = "Gönder",
+                Location = new Point(250, 354),
+                Size = new Size(75, 25),
+                BackColor = Color.FromArgb(33, 38, 45),
+                ForeColor = Color.FromArgb(201, 209, 217),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            _sendBtn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
+            _sendBtn.Click += (s, e) => TriggerSend();
+
+            this.Controls.Add(_chatHistory);
+            this.Controls.Add(_chatInput);
+            this.Controls.Add(_sendBtn);
+        }
+
+        public void AppendMessage(string msg, bool local)
+        {
+            string prefix = local ? "Siz: " : "Teknisyen: ";
+            _chatHistory.AppendText(prefix + msg + "\r\n\r\n");
+            _chatHistory.SelectionStart = _chatHistory.Text.Length;
+            _chatHistory.ScrollToCaret();
+        }
+
+        private void TriggerSend()
+        {
+            string txt = _chatInput.Text.Trim();
+            if (string.IsNullOrEmpty(txt)) return;
+            _chatInput.Clear();
+            AppendMessage(txt, true);
+            MessageSent?.Invoke(this, txt);
+        }
+    }
+
+    // ── Win32 / COM LOOPBACK AUDIO API INTEROP DEFINITIONS ─────────────────
+    [ComImport, Guid("BCDE0359-8665-41C6-B4B6-83E90C0030C8")]
+    internal class MMDeviceEnumerator { }
+
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice);
+    }
+
+    [Guid("D66606E4-827E-45F1-8B02-DE0904C740C6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDevice
+    {
+        [PreserveSig] int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+    }
+
+    [Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioClient
+    {
+        [PreserveSig] int Initialize(int shareMode, int streamFlags, long hBufferDuration, long hPeriodicity, ref WAVEFORMATEX pFormat, ref Guid audioSessionGuid);
+        [PreserveSig] int GetBufferSize(out uint pNumBufferFrames);
+        [PreserveSig] int GetStreamLatency(out long pCurrentLatency);
+        [PreserveSig] int GetCurrentPadding(out uint pNumPaddingFrames);
+        [PreserveSig] int IsFormatSupported(int shareMode, ref WAVEFORMATEX pFormat, out IntPtr ppClosestMatch);
+        [PreserveSig] int GetMixFormat(out IntPtr ppDeviceFormat);
+        [PreserveSig] int GetDevicePeriod(out long pDefaultDevicePeriod, out long pMinimumDevicePeriod);
+        [PreserveSig] int Start();
+        [PreserveSig] int Stop();
+        [PreserveSig] int Reset();
+        [PreserveSig] int SetEventHandle(IntPtr eventHandle);
+        [PreserveSig] int GetService(ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+    }
+
+    [Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioCaptureClient
+    {
+        [PreserveSig] int GetBuffer(out IntPtr ppData, out uint pNumFramesToRead, out uint pdwFlags, out long pu64DevicePosition, out long pu64QPCPosition);
+        [PreserveSig] int ReleaseBuffer(uint numFramesRead);
+        [PreserveSig] int GetNextPacketSize(out uint pNumFramesInNextPacket);
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal struct WAVEFORMATEX
+    {
+        public short wFormatTag;
+        public short nChannels;
+        public int nSamplesPerSec;
+        public int nAvgBytesPerSec;
+        public short nBlockAlign;
+        public short wBitsPerSample;
+        public short cbSize;
     }
 }

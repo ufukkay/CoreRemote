@@ -187,14 +187,21 @@ wss.on("connection", (ws, req) => {
   updateDeviceStatus(deviceId, "online");
 
   ws.on("message", (message, isBinary) => {
-    // Check if binary screen frame (starts with 0x01)
-    if (isBinary || (Buffer.isBuffer(message) && message[0] === 0x01)) {
-      io.to(`device:${deviceId}`).emit("agent_frame", message);
-      
-      // Teknisyen uygulamasına da canlı ekran verisini yönlendir
-      const opWs = activeOperators.get(deviceId);
-      if (opWs && opWs.readyState === wsReadyStateOpen()) {
-        opWs.send(message);
+    if (isBinary || Buffer.isBuffer(message)) {
+      const typeByte = message[0];
+      if (typeByte === 0x01) {
+        // Canlı ekran yayını
+        io.to(`device:${deviceId}`).emit("agent_frame", message);
+        const opWs = activeOperators.get(deviceId);
+        if (opWs && opWs.readyState === wsReadyStateOpen()) {
+          opWs.send(message);
+        }
+      } else if (typeByte === 0x02) {
+        // Canlı ses yayını (sadece teknisyen uygulamasına)
+        const opWs = activeOperators.get(deviceId);
+        if (opWs && opWs.readyState === wsReadyStateOpen()) {
+          opWs.send(message);
+        }
       }
       return;
     }

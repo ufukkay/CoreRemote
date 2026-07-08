@@ -287,13 +287,26 @@ operatorWss.on("connection", (ws, req) => {
   }
 
   ws.on("message", (message) => {
-    // Teknisyenden gelen girdi aksiyonlarını ajana ilet
+    // Teknisyenden gelen mesajları ajana ilet
     const aWs = activeAgents.get(deviceId);
     if (aWs && aWs.readyState === wsReadyStateOpen()) {
       try {
-        aWs.send(JSON.stringify({ type: "webrtc_signal", data: JSON.parse(message.toString()) }));
+        const parsed = JSON.parse(message.toString());
+
+        // Eğer mesaj zaten { type: "webrtc_signal", data: {...} } formatındaysa → olduğu gibi ilet
+        if (parsed.type === "webrtc_signal") {
+          aWs.send(message.toString());
+        }
+        // Eğer mesaj ham girdi aksiyonuysa { action: "mousemove", ... } → webrtc_signal formatına sar
+        else if (parsed.action) {
+          aWs.send(JSON.stringify({ type: "webrtc_signal", data: parsed }));
+        }
+        // Diğer tüm mesaj tipleri (file_chunk vb.) → olduğu gibi ilet
+        else {
+          aWs.send(message.toString());
+        }
       } catch (err) {
-        console.error("[OPERATOR MSG ERR] Geçersiz girdi verisi:", err.message);
+        console.error("[OPERATOR MSG ERR] Geçersiz mesaj verisi:", err.message);
       }
     }
   });

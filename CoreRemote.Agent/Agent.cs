@@ -1460,6 +1460,7 @@ namespace CoreRemote.Agent
         {
             try
             {
+                if (string.IsNullOrEmpty(json)) return "";
                 string searchKey = "\"" + key + "\"";
                 int keyIdx = json.IndexOf(searchKey);
                 if (keyIdx == -1) return "";
@@ -1469,37 +1470,57 @@ namespace CoreRemote.Agent
 
                 int valueStart = colonIdx + 1;
                 while (valueStart < json.Length && (json[valueStart] == ' ' || json[valueStart] == '\t' || json[valueStart] == '\r' || json[valueStart] == '\n'))
-                {
                     valueStart++;
-                }
 
                 if (valueStart >= json.Length) return "";
 
-                if (json[valueStart] == '"')
+                char first = json[valueStart];
+
+                // String değer — escaped quote'ları atlayarak doğru kapanışı bul
+                if (first == '"')
                 {
-                    int stringEnd = json.IndexOf('"', valueStart + 1);
-                    if (stringEnd == -1) return "";
-                    return json.Substring(valueStart + 1, stringEnd - valueStart - 1);
-                }
-                else if (json[valueStart] == '{')
-                {
-                    int bracketCount = 1;
-                    int idx = valueStart + 1;
-                    while (idx < json.Length && bracketCount > 0)
+                    int i = valueStart + 1;
+                    while (i < json.Length)
                     {
-                        if (json[idx] == '{') bracketCount++;
-                        else if (json[idx] == '}') bracketCount--;
-                        idx++;
+                        if (json[i] == '\\') { i += 2; continue; } // escape karakterini atla
+                        if (json[i] == '"') break;
+                        i++;
                     }
-                    return json.Substring(valueStart, idx - valueStart);
+                    if (i >= json.Length) return "";
+                    return json.Substring(valueStart + 1, i - valueStart - 1);
                 }
+                // Obje değer — string içindeki { } karakterlerini atlayarak doğru kapanışı bul
+                else if (first == '{' || first == '[')
+                {
+                    char open = first;
+                    char close = (open == '{') ? '}' : ']';
+                    int depth = 1;
+                    int i = valueStart + 1;
+                    while (i < json.Length && depth > 0)
+                    {
+                        char c = json[i];
+                        if (c == '"') // string içine girince { } sayma
+                        {
+                            i++;
+                            while (i < json.Length)
+                            {
+                                if (json[i] == '\\') { i += 2; continue; }
+                                if (json[i] == '"') break;
+                                i++;
+                            }
+                        }
+                        else if (c == open)  depth++;
+                        else if (c == close) depth--;
+                        i++;
+                    }
+                    return json.Substring(valueStart, i - valueStart);
+                }
+                // Boolean, number veya null
                 else
                 {
                     int endIdx = valueStart;
                     while (endIdx < json.Length && json[endIdx] != ',' && json[endIdx] != '}' && json[endIdx] != ']')
-                    {
                         endIdx++;
-                    }
                     return json.Substring(valueStart, endIdx - valueStart).Trim();
                 }
             }
@@ -1508,9 +1529,6 @@ namespace CoreRemote.Agent
                 return "";
             }
         }
-    }
-
-    // ── LIGHTWEIGHT CLIENT CHAT FORM UI ─────────────────────────────────────
     public class ChatForm : Form
     {
         public event EventHandler<string> MessageSent;

@@ -725,8 +725,9 @@ namespace CoreRemote.Technician
             _screenBox.MouseDown += ScreenBox_MouseDown;
             _screenBox.MouseUp += ScreenBox_MouseUp;
             _screenBox.MouseWheel += ScreenBox_MouseWheel;
-            _screenBox.MouseClick += (s, e) => { _screenBox.Focus(); };
-            _screenBox.Focus();
+            // Mouse tıklandığında form fokusunu geri al (klavye girdisi için şart)
+            _screenBox.MouseClick += (s, e) => { this.Focus(); this.ActiveControl = null; };
+            _screenBox.MouseEnter += (s, e) => { this.Focus(); this.ActiveControl = null; };
 
             // Restore focus to screen after monitor move or resize
             this.LocationChanged += (s, e) => { if (_screenBox.CanFocus) _screenBox.Focus(); };
@@ -1364,21 +1365,28 @@ namespace CoreRemote.Technician
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (_tabControl.SelectedTab.Text == "Masaüstü")
+            // Ekran tabı aktifken tüm tuş basışlarını yakala ve ajana ilet
+            if (_tabControl != null && _tabControl.SelectedIndex == 0)
             {
                 int vk = (int)(keyData & Keys.KeyCode);
-                SendInputSignal("{\"action\":\"keydown\",\"vk\":" + vk + "}");
-                return true;
+                if (vk != 0)
+                {
+                    SendInputSignal("{\"action\":\"keydown\",\"vk\":" + vk + "}");
+                }
+                return true; // Tuşu başka kontrollere iletme
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
         protected override void OnKeyUp(KeyEventArgs e)
         {
-            if (_tabControl.SelectedTab.Text == "Masaüstü")
+            if (_tabControl != null && _tabControl.SelectedIndex == 0)
             {
                 int vk = (int)e.KeyCode;
-                SendInputSignal("{\"action\":\"keyup\",\"vk\":" + vk + "}");
+                if (vk != 0)
+                {
+                    SendInputSignal("{\"action\":\"keyup\",\"vk\":" + vk + "}");
+                }
                 e.Handled = true;
             }
             base.OnKeyUp(e);

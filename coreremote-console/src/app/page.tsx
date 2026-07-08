@@ -62,6 +62,9 @@ export default function Home() {
   
   // Update state
   const [latestVersion, setLatestVersion] = useState("1.0.0");
+  const [serverVersion, setServerVersion] = useState("1.0.0");
+  const [updatingServer, setUpdatingServer] = useState(false);
+  const [serverUpdateCountdown, setServerUpdateCountdown] = useState(15);
   const [updateFileUrl, setUpdateFileUrl] = useState("");
   const [deviceUpdateProgress, setDeviceUpdateProgress] = useState<Record<string, string>>({});
   const [releaseInfo, setReleaseInfo] = useState<{
@@ -126,6 +129,7 @@ export default function Home() {
       const data = await res.json();
       setLatestVersion(data.latestVersion);
       setUpdateFileUrl(data.url);
+      setServerVersion(data.serverVersion || "1.0.0");
       setReleaseInfo({
         releaseName: data.releaseName || "",
         publishedAt: data.publishedAt || "",
@@ -369,6 +373,37 @@ export default function Home() {
     }
   };
 
+  const triggerServerUpdate = async () => {
+    if (!confirm("Sinyalizasyon Sunucusu ve Yönetim Paneli en son GitHub sürümüne güncellenecektir. Bu işlem sırasında bağlantınız kısa süreliğine kesilebilir. Devam etmek istiyor musunuz?")) {
+      return;
+    }
+    setUpdatingServer(true);
+    setServerUpdateCountdown(15);
+    try {
+      const res = await fetch(`${SERVER_HOST}/api/admin/update-server`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Sunucu güncellemesi başlatılamadı.");
+      }
+    } catch (err: any) {
+      alert(`Hata: ${err.message}`);
+      setUpdatingServer(false);
+      return;
+    }
+
+    // Geri sayım başlat
+    const interval = setInterval(() => {
+      setServerUpdateCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          window.location.reload();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   // Filter devices
   const filteredDevices = devices.filter(d => 
     d.hostname.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -390,6 +425,18 @@ export default function Home() {
 
   return (
     <div className="bg-[#0d1117] min-h-screen text-[#c9d1d9] font-sans flex flex-col">
+      {updatingServer && (
+        <div className="fixed inset-0 bg-[#0d1117]/85 backdrop-blur-sm z-50 flex items-center justify-center flex-col gap-4 text-center p-6">
+          <div className="w-12 h-12 border-4 border-[#238636] border-t-transparent rounded-full animate-spin"></div>
+          <h2 className="text-xl font-semibold text-[#f0f6fc] mt-2">Sunucu Güncelleniyor</h2>
+          <p className="text-sm text-[#8b949e] max-w-md">
+            Sinyalizasyon sunucusu en son sürümü çekiyor, bağımlılıkları yüklüyor ve operatör panelini yeniden derliyor.
+          </p>
+          <div className="bg-[#161b22] border border-[#30363d] px-4 py-2 rounded text-xs font-mono text-[#56d364]">
+            Sayfa yenileniyor: {serverUpdateCountdown} saniye...
+          </div>
+        </div>
+      )}
       {/* GitHub Style Top Navigation */}
       <header className="bg-[#161b22] border-b border-[#30363d] px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -694,6 +741,42 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {/* Sol Panel: Sürüm Bilgileri */}
                 <div className="md:col-span-1 flex flex-col gap-6">
+                  {/* Sistem / Sunucu Sürümü Kartı */}
+                  <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 flex flex-col gap-4">
+                    <h3 className="font-semibold text-sm text-[#f0f6fc] border-b border-[#30363d] pb-2 flex items-center gap-2">
+                      <Server size={16} className="text-[#58a6ff]" />
+                      Sistem / Sunucu Sürümü
+                    </h3>
+                    <div className="flex flex-col gap-3 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[#8b949e]">Mevcut Sunucu Sürümü:</span>
+                        <span className="font-mono text-xs text-[#c9d1d9] bg-[#21262d] border border-[#30363d] px-2 py-0.5 rounded">v{serverVersion}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[#8b949e]">En Son GitHub Sürümü:</span>
+                        <span className="font-mono text-xs text-[#56d364] bg-[#238636]/10 border border-[#238636]/30 px-2 py-0.5 rounded">v{latestVersion}</span>
+                      </div>
+                      
+                      {serverVersion !== latestVersion ? (
+                        <div className="mt-2">
+                          <button
+                            onClick={triggerServerUpdate}
+                            className="w-full bg-[#238636] hover:bg-[#2ea043] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5"
+                          >
+                            <RefreshCw size={14} className="animate-spin-slow" />
+                            Sunucuyu Şimdi Güncelle (v{latestVersion})
+                          </button>
+                          <p className="text-[10px] text-[#8b949e] mt-1 text-center">
+                            Sunucu güncellemeyi arka planda çekip otomatik olarak yeniden başlayacaktır.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-center text-[#56d364] text-[11px] bg-[#238636]/10 border border-[#238636]/30 py-2 rounded font-medium">
+                          ✓ Sunucu Sisteminiz Güncel
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 flex flex-col gap-4">
                     <h3 className="font-semibold text-sm text-[#f0f6fc] border-b border-[#30363d] pb-2 flex items-center gap-2">
                       <UploadCloud size={16} className="text-[#56d364]" />

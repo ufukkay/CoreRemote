@@ -10,6 +10,7 @@ const fs = require("fs");
 const { exec } = require("child_process");
 
 const PORT = process.env.PORT || 5000;
+const SERVER_VERSION = "1.0.0";
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -285,7 +286,8 @@ app.get("/api/update/check", async (req, res) => {
       releaseName: data.name || data.tag_name || "Sürüm Bilgisi Yok",
       publishedAt: data.published_at || "",
       releaseNotes: data.body || "Sürüm notu eklenmemiş.",
-      githubUrl: data.html_url || "https://github.com/ufukkay/CoreRemote"
+      githubUrl: data.html_url || "https://github.com/ufukkay/CoreRemote",
+      serverVersion: SERVER_VERSION
     });
   } catch (err) {
     console.error("Error checking updates from GitHub:", err.message);
@@ -465,6 +467,23 @@ app.get("/api/builder/download-exe", (req, res) => {
     try { fs.unlinkSync(tempExePath); } catch (e) {}
     res.status(500).send("Ajan oluşturulamadı: " + err.message);
   }
+});
+
+// Sunucuyu kendi kendine güncelleyen (git pull + deploy-iis.ps1) API
+app.all("/api/admin/update-server", (req, res) => {
+  console.log("[SERVER UPDATE] Sunucu otomatik güncelleme tetiklendi!");
+
+  // Bağımsız (detached) PowerShell süreci başlat
+  const cmd = 'Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command \\"cd C:\\CoreRemote; git pull; .\\deploy-iis.ps1\\"" -WindowStyle Hidden';
+  
+  exec(`powershell.exe -Command "${cmd}"`, (err, stdout, stderr) => {
+    if (err) {
+      console.error("[SERVER UPDATE ERR] Güncelleme başlatılamadı:", stderr || err.message);
+      return res.status(500).json({ success: false, error: stderr || err.message });
+    }
+    console.log("[SERVER UPDATE] Güncelleme arka planda başarıyla başlatıldı.");
+    res.json({ success: true, message: "Sunucu güncelleme süreci başlatıldı. Servisler 15 saniye içinde yeniden yüklenecektir." });
+  });
 });
 
 // Sunucuyu Başlat

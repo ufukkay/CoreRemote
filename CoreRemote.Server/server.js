@@ -100,17 +100,24 @@ const io = new Server(server, {
 
 // Raw WebSockets for C# Agents
 const wss = new WebSocketServer({ noServer: true });
+const operatorWss = new WebSocketServer({ noServer: true });
 
 // Active Agent connections map: deviceId -> ws connection
 const activeAgents = new Map();
+// Active Operator connections map: deviceId -> ws connection
+const activeOperators = new Map();
 
-// Upgrade HTTP server to WebSockets for /agent-socket
+// Upgrade HTTP server to WebSockets for /agent-socket and /operator-socket
 server.on("upgrade", (request, socket, head) => {
   const pathname = url.parse(request.url).pathname;
 
   if (pathname === "/agent-socket") {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit("connection", ws, request);
+    });
+  } else if (pathname === "/operator-socket") {
+    operatorWss.handleUpgrade(request, socket, head, (ws) => {
+      operatorWss.emit("connection", ws, request);
     });
   } else {
     socket.destroy();
@@ -183,6 +190,12 @@ wss.on("connection", (ws, req) => {
     // Check if binary screen frame (starts with 0x01)
     if (isBinary || (Buffer.isBuffer(message) && message[0] === 0x01)) {
       io.to(`device:${deviceId}`).emit("agent_frame", message);
+      
+      // Teknisyen uygulamasına da canlı ekran verisini yönlendir
+      const opWs = activeOperators.get(deviceId);
+      if (opWs && opWs.readyState === wsReadyStateOpen()) {
+        opWs.send(message);
+      }
       return;
     }
 
@@ -225,6 +238,59 @@ wss.on("connection", (ws, req) => {
 
   ws.on("error", (err) => {
     console.error(`[WS ERR] Device: ${deviceId}`, err.message);
+  });
+});
+
+// ── Teknisyen (WebSocket) Connection Handler ──────────────────────────
+operatorWss.on("connection", (ws, req) => {
+  const parameters = url.parse(req.url, true).query;
+  const deviceId = parameters.deviceId;
+
+  if (!deviceId) {
+    ws.close(1008, "Device ID Required");
+    return;
+  }
+
+  console.log(`[OPERATOR +] Teknisyen bağlandı, hedef cihaz: ${deviceId}`);
+  activeOperators.set(deviceId, ws);
+
+  // Ajan eğer aktifse ona ekran yayınını başlatma komutunu gönder
+  const agentWs = activeAgents.get(deviceId);
+  if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
+    agentWs.send(JSON.stringify({
+      type: "webrtc_signal",
+      data: { action: "start_stream", quality: 60, interval: 100 }
+    }));
+  }
+
+  ws.on("message", (message) => {
+    // Teknisyenden gelen girdi aksiyonlarını ajana ilet
+    const aWs = activeAgents.get(deviceId);
+    if (aWs && aWs.readyState === wsReadyStateOpen()) {
+      try {
+        aWs.send(JSON.stringify({ type: "webrtc_signal", data: JSON.parse(message.toString()) }));
+      } catch (err) {
+        console.error("[OPERATOR MSG ERR] Geçersiz girdi verisi:", err.message);
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    console.log(`[OPERATOR -] Teknisyen ayrıldı, hedef cihaz: ${deviceId}`);
+    activeOperators.delete(deviceId);
+
+    // Eğer izleyen başka teknisyen yoksa yayını durdur komutu yollanabilir
+    const aWs = activeAgents.get(deviceId);
+    if (aWs && aWs.readyState === wsReadyStateOpen()) {
+      aWs.send(JSON.stringify({
+        type: "webrtc_signal",
+        data: { action: "stop_stream" }
+      }));
+    }
+  });
+
+  ws.on("error", (err) => {
+    console.error(`[OPERATOR ERR] Cihaz: ${deviceId}`, err.message);
   });
 });
 
@@ -518,6 +584,62 @@ app.get("/api/builder/download-exe", (req, res) => {
     try { fs.unlinkSync(tempCsPath); } catch (e) {}
     try { fs.unlinkSync(tempExePath); } catch (e) {}
     res.status(500).send("Ajan oluşturulamadı: " + err.message);
+  }
+});
+
+// Teknisyen Portal Uygulamasını (EXE) derleyen ve indiren API
+app.get("/api/builder/download-technician", (req, res) => {
+  const host = req.headers.host;
+  const buildId = Date.now();
+  const tempCsPath = path.join(__dirname, `temp_tech_${buildId}.cs`);
+  const tempExePath = path.join(__dirname, `temp_tech_${buildId}.exe`);
+
+  try {
+    const techSourcePath = path.join(__dirname, "../CoreRemote.Technician/Technician.cs");
+    let techCode = fs.readFileSync(techSourcePath, "utf-8");
+
+    // Sunucu HTTP ve WS adreslerini dinamik olarak yerleştir
+    techCode = techCode.replace(
+      /public static string ServerHttpUrl = "http:\/\/localhost:5000";/,
+      `public static string ServerHttpUrl = "http://${host}";`
+    );
+    techCode = techCode.replace(
+      /public static string ServerWsUrl = "ws:\/\/localhost:5000";/,
+      `public static string ServerWsUrl = "ws://${host.split(':')[0]}:5000";`
+    );
+
+    // Geçici .cs dosyasını yaz
+    fs.writeFileSync(tempCsPath, techCode, "utf-8");
+
+    // Derleyiciyi (csc.exe) çalıştır
+    const logoIcoPath = path.join(__dirname, "agent_logo.ico");
+    const hasIco = fs.existsSync(logoIcoPath);
+    const icoArg = hasIco ? `/win32icon:"${logoIcoPath}"` : "";
+
+    const cscPath = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
+    const cmd = `"${cscPath}" /target:winexe ${icoArg} /out:"${tempExePath}" /reference:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll "${tempCsPath}"`;
+
+    exec(cmd, (err, stdout, stderr) => {
+      if (err) {
+        console.error("C# Technician Compilation error:", stderr || stdout || err.message);
+        try { fs.unlinkSync(tempCsPath); } catch (e) {}
+        try { fs.unlinkSync(tempExePath); } catch (e) {}
+        return res.status(500).send("Teknisyen uygulaması derlenirken hata oluştu: " + (stderr || err.message));
+      }
+
+      res.download(tempExePath, "CoreRemoteViewer.exe", (downloadErr) => {
+        try { fs.unlinkSync(tempCsPath); } catch (e) {}
+        try { fs.unlinkSync(tempExePath); } catch (e) {}
+        if (downloadErr) {
+          console.error("Download error:", downloadErr.message);
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Technician builder error:", err);
+    try { fs.unlinkSync(tempCsPath); } catch (e) {}
+    try { fs.unlinkSync(tempExePath); } catch (e) {}
+    res.status(500).send("Teknisyen uygulaması oluşturulamadı: " + err.message);
   }
 });
 

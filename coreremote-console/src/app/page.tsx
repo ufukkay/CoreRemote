@@ -20,7 +20,8 @@ import {
   CheckCircle,
   Copy,
   Terminal,
-  Grid
+  Grid,
+  Monitor
 } from "lucide-react";
 
 // Server API config
@@ -734,18 +735,33 @@ export default function Home() {
                               </span>
                             </td>
                             <td className="p-4 text-right">
-                              <button
-                                onClick={() => startSession(d.id)}
-                                disabled={d.status !== "online"}
-                                className={`inline-flex items-center gap-2 font-medium text-xs px-3 py-1.5 rounded transition-all ${
-                                  d.status === "online"
-                                    ? "bg-[#238636] hover:bg-[#2ea043] text-white cursor-pointer"
-                                    : "bg-[#30363d] text-[#8b949e] cursor-not-allowed"
-                                }`}
-                              >
-                                <Play size={12} />
-                                Bağlan
-                              </button>
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() => startSession(d.id)}
+                                  disabled={d.status !== "online"}
+                                  className={`inline-flex items-center gap-1.5 font-medium text-xs px-2.5 py-1.5 rounded transition-all ${
+                                    d.status === "online"
+                                      ? "bg-[#238636] hover:bg-[#2ea043] text-white cursor-pointer"
+                                      : "bg-[#30363d] text-[#8b949e] cursor-not-allowed"
+                                  }`}
+                                  title="Tarayıcı penceresinde canlı kontrol başlat"
+                                >
+                                  <Play size={12} />
+                                  Tarayıcıda Aç
+                                </button>
+                                <a
+                                  href={d.status === "online" ? `coreremote://connect/${d.id}` : undefined}
+                                  className={`inline-flex items-center gap-1.5 font-medium text-xs px-2.5 py-1.5 rounded transition-all ${
+                                    d.status === "online"
+                                      ? "bg-[#1f6feb] hover:bg-[#388bfd] text-white cursor-pointer"
+                                      : "bg-[#30363d] text-[#8b949e] pointer-events-none cursor-not-allowed"
+                                  }`}
+                                  title="Teknisyen masaüstü uygulaması ile canlı kontrol başlat"
+                                >
+                                  <Monitor size={12} />
+                                  Uygulamada Aç
+                                </a>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -822,8 +838,8 @@ export default function Home() {
 
                   <div className="flex flex-col gap-2 border-t border-[#30363d] pt-4 mt-2">
                     <h4 className="font-semibold text-xs text-[#f0f6fc]">Alternatif: Derlenmiş EXE Olarak İndir</h4>
-                    <p className="text-xs text-[#8b949e]">Ajanı sunucu üzerinde derleyip doğrudan bir <code>.exe</code> dosyası olarak indirebilirsiniz. İndirdiğiniz dosyayı hedef bilgisayarda doğrudan çalıştırabilirsiniz.</p>
-                    <div>
+                    <p className="text-xs text-[#8b949e]">Ajanı veya teknisyen bağlantı portalını sunucu üzerinde derleyip doğrudan bir <code>.exe</code> dosyası olarak indirebilirsiniz.</p>
+                    <div className="flex flex-wrap gap-3">
                       <a
                         href={`${SERVER_HOST}/api/builder/download-exe?title=${encodeURIComponent(builderTitle)}&server=${encodeURIComponent(builderServer)}`}
                         download="CoreRemoteAgent.exe"
@@ -831,6 +847,14 @@ export default function Home() {
                       >
                         <UploadCloud size={14} />
                         Ajanı İndir (.exe)
+                      </a>
+                      <a
+                        href={`${SERVER_HOST}/api/builder/download-technician`}
+                        download="CoreRemoteViewer.exe"
+                        className="inline-flex items-center gap-2 bg-[#1f6feb] hover:bg-[#388bfd] text-white text-xs font-semibold px-4 py-2.5 rounded transition-all cursor-pointer"
+                      >
+                        <Monitor size={14} />
+                        Teknisyen Uygulamasını İndir (.exe)
                       </a>
                     </div>
                   </div>

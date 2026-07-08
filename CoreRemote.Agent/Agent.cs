@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Management;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace CoreRemote.Agent
 {
@@ -963,10 +964,16 @@ namespace CoreRemote.Agent
 
                 while (_audioStreaming && _ws.State == WebSocketState.Open)
                 {
-                    captureClient.GetNextPacketSize(out uint packetSize);
+                    uint packetSize;
+                    captureClient.GetNextPacketSize(out packetSize);
                     if (packetSize > 0)
                     {
-                        hr = captureClient.GetBuffer(out IntPtr dataPtr, out uint numFrames, out uint flags, out _, out _);
+                        IntPtr dataPtr;
+                        uint numFrames;
+                        uint flags;
+                        long devPos;
+                        long qpcPos;
+                        hr = captureClient.GetBuffer(out dataPtr, out numFrames, out flags, out devPos, out qpcPos);
                         if (hr == 0 && numFrames > 0 && dataPtr != IntPtr.Zero)
                         {
                             int dataSize = (int)(numFrames * format.nBlockAlign);
@@ -1471,7 +1478,11 @@ namespace CoreRemote.Agent
             if (string.IsNullOrEmpty(txt)) return;
             _chatInput.Clear();
             AppendMessage(txt, true);
-            MessageSent?.Invoke(this, txt);
+            var handler = MessageSent;
+            if (handler != null)
+            {
+                handler(this, txt);
+            }
         }
     }
 

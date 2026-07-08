@@ -663,10 +663,10 @@ namespace CoreRemote.Technician
             // Monitor Selector Dropdown
             Label monLbl = new Label { Text = "Ekran:", Width = 45, Location = new Point(10, 15), ForeColor = Color.White, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
             _monitorSelect = new ComboBox { Location = new Point(58, 12), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            _monitorSelect.Items.Add("Ekran 1");
+            _monitorSelect.Items.Add("Tüm Ekranlar (Yan Yana)");
             _monitorSelect.SelectedIndex = 0;
             _monitorSelect.SelectedIndexChanged += (s, e) => {
-                SendControlCommand("select_monitor", "\"index\":" + _monitorSelect.SelectedIndex);
+                SendControlCommand("select_monitor", "\"index\":" + (_monitorSelect.SelectedIndex - 1));
             };
 
             // View Scaling Mode Selector Dropdown (stretch, zoom, original size scroll)
@@ -1256,6 +1256,7 @@ namespace CoreRemote.Technician
                     {
                         _monitorSelect.Invoke((MethodInvoker)delegate {
                             _monitorSelect.Items.Clear();
+                            _monitorSelect.Items.Add("Tüm Ekranlar (Yan Yana)");
                             string[] list = monitors.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
                             foreach (var mon in list)
                             {

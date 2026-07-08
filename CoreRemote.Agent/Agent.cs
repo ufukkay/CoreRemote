@@ -51,7 +51,7 @@ namespace CoreRemote.Agent
         private static bool _audioStreaming = false;
         private static string _lastClipboardText = "";
         private static ChatForm _chatForm;
-        private static int _activeMonitorIndex = 0; // Primary monitor default
+        private static int _activeMonitorIndex = -1; // -1 means all screens side-by-side default
 
         // ── Win32 APIs for Console Hiding and Input Simulation ──
         [DllImport("kernel32.dll")]
@@ -535,7 +535,7 @@ namespace CoreRemote.Agent
                 case "select_monitor":
                     string monitorIdxStr = GetJsonValue(fullMessage, "index");
                     int mIdx;
-                    if (int.TryParse(monitorIdxStr, out mIdx) && mIdx >= 0 && mIdx < Screen.AllScreens.Length)
+                    if (int.TryParse(monitorIdxStr, out mIdx) && mIdx >= -1 && mIdx < Screen.AllScreens.Length)
                     {
                         _activeMonitorIndex = mIdx;
                         Console.WriteLine("Active monitor switched to index: " + mIdx);
@@ -660,16 +660,23 @@ namespace CoreRemote.Agent
             try
             {
                 // Multi-monitor support: select screen coordinates dynamically
-                Screen activeScreen = Screen.PrimaryScreen;
+                int width, height, left, top;
+
                 if (_activeMonitorIndex >= 0 && _activeMonitorIndex < Screen.AllScreens.Length)
                 {
-                    activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                    Screen activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                    width = activeScreen.Bounds.Width;
+                    height = activeScreen.Bounds.Height;
+                    left = activeScreen.Bounds.Left;
+                    top = activeScreen.Bounds.Top;
                 }
-
-                int width = activeScreen.Bounds.Width;
-                int height = activeScreen.Bounds.Height;
-                int left = activeScreen.Bounds.Left;
-                int top = activeScreen.Bounds.Top;
+                else
+                {
+                    width = SystemInformation.VirtualScreen.Width;
+                    height = SystemInformation.VirtualScreen.Height;
+                    left = SystemInformation.VirtualScreen.Left;
+                    top = SystemInformation.VirtualScreen.Top;
+                }
 
                 using (Bitmap bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb))
                 {
@@ -1172,14 +1179,26 @@ namespace CoreRemote.Agent
                     double ry = double.Parse(GetJsonValue(signalJson, "y"), System.Globalization.CultureInfo.InvariantCulture);
 
                     // Multi-monitor mouse movement coordinate scaling
-                    Screen activeScreen = Screen.PrimaryScreen;
+                    int activeWidth, activeHeight, activeLeft, activeTop;
+
                     if (_activeMonitorIndex >= 0 && _activeMonitorIndex < Screen.AllScreens.Length)
                     {
-                        activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                        Screen activeScreen = Screen.AllScreens[_activeMonitorIndex];
+                        activeWidth = activeScreen.Bounds.Width;
+                        activeHeight = activeScreen.Bounds.Height;
+                        activeLeft = activeScreen.Bounds.Left;
+                        activeTop = activeScreen.Bounds.Top;
+                    }
+                    else
+                    {
+                        activeWidth = SystemInformation.VirtualScreen.Width;
+                        activeHeight = SystemInformation.VirtualScreen.Height;
+                        activeLeft = SystemInformation.VirtualScreen.Left;
+                        activeTop = SystemInformation.VirtualScreen.Top;
                     }
 
-                    int absoluteX = activeScreen.Bounds.Left + (int)(rx * activeScreen.Bounds.Width);
-                    int absoluteY = activeScreen.Bounds.Top + (int)(ry * activeScreen.Bounds.Height);
+                    int absoluteX = activeLeft + (int)(rx * activeWidth);
+                    int absoluteY = activeTop + (int)(ry * activeHeight);
 
                     // Use native SetCursorPos for correct multi-monitor coordinate mapping
                     SetCursorPos(absoluteX, absoluteY);

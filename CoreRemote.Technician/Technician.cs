@@ -1031,40 +1031,50 @@ namespace CoreRemote.Technician
 
         private void ProcessBinaryPacket(byte[] packet)
         {
-            if (packet.Length < 2) return;
-            byte packetType = packet[0];
-
-            if (packetType == 0x01)
+            try
             {
-                byte[] jpegData = new byte[packet.Length - 1];
-                Buffer.BlockCopy(packet, 1, jpegData, 0, jpegData.Length);
-                using (MemoryStream stream = new MemoryStream(jpegData))
-                {
-                    Image img = Image.FromStream(stream);
-                    _screenBox.Invoke((MethodInvoker)delegate {
-                        Image old = _screenBox.Image;
-                        _screenBox.Image = img;
-                        if (old != null) old.Dispose();
+                if (packet.Length < 2) return;
+                byte packetType = packet[0];
 
-                        // Auto-scroll mode sizing update if selected
-                        if (_viewModeSelect.SelectedIndex == 2)
+                if (packetType == 0x01)
+                {
+                    byte[] jpegData = new byte[packet.Length - 1];
+                    Buffer.BlockCopy(packet, 1, jpegData, 0, jpegData.Length);
+                    using (MemoryStream stream = new MemoryStream(jpegData))
+                    {
+                        using (Image tempImg = Image.FromStream(stream))
                         {
-                            _screenBox.Size = img.Size;
+                            Bitmap bmp = new Bitmap(tempImg); // Creates a copy of the pixel data, completely independent of the stream
+                            _screenBox.Invoke((MethodInvoker)delegate {
+                                Image old = _screenBox.Image;
+                                _screenBox.Image = bmp;
+                                if (old != null) old.Dispose();
+
+                                // Auto-scroll mode sizing update if selected
+                                if (_viewModeSelect.SelectedIndex == 2)
+                                {
+                                    _screenBox.Size = bmp.Size;
+                                }
+                            });
                         }
-                    });
+                    }
+                }
+                else if (packetType == 0x02)
+                {
+                    if (_isAudioMuted) return;
+                    byte[] pcmData = new byte[packet.Length - 1];
+                    Buffer.BlockCopy(packet, 1, pcmData, 0, pcmData.Length);
+
+                    if (_audioPlayer == null)
+                    {
+                        _audioPlayer = new WavePlayer(44100, 2, 16);
+                    }
+                    _audioPlayer.Play(pcmData);
                 }
             }
-            else if (packetType == 0x02)
+            catch (Exception ex)
             {
-                if (_isAudioMuted) return;
-                byte[] pcmData = new byte[packet.Length - 1];
-                Buffer.BlockCopy(packet, 1, pcmData, 0, pcmData.Length);
-
-                if (_audioPlayer == null)
-                {
-                    _audioPlayer = new WavePlayer(44100, 2, 16);
-                }
-                _audioPlayer.Play(pcmData);
+                Console.WriteLine("Error processing binary packet: " + ex.Message);
             }
         }
 

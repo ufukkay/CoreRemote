@@ -24,7 +24,9 @@ import {
 } from "lucide-react";
 
 // Server API config
-const SERVER_HOST = "http://localhost:5000";
+const SERVER_HOST = typeof window !== "undefined"
+  ? `${window.location.protocol}//${window.location.hostname}:5000`
+  : "http://localhost:5000";
 
 interface Telemetry {
   hostname: string;

@@ -88,7 +88,7 @@ cd $serverDest
 pm2 start server.js --name "coreremote-server"
 
 cd $consoleDest
-pm2 start npm --name "coreremote-console" -- start
+pm2 start npm --name "coreremote-console" -- run start
 
 # PM2 durumunu kaydet
 pm2 save

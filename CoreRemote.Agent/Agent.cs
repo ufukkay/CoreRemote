@@ -143,6 +143,17 @@ namespace CoreRemote.Agent
         {
             try
             {
+                // Force administrator privilege check on start
+                using (System.Security.Principal.WindowsIdentity identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                {
+                    System.Security.Principal.WindowsPrincipal principal = new System.Security.Principal.WindowsPrincipal(identity);
+                    if (!principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator))
+                    {
+                        ElevateProcess();
+                        return; // Terminate non-elevated launch
+                    }
+                }
+
                 // Make process DPI-aware to prevent screen capture scaling offset bugs
                 SetProcessDPIAware();
 

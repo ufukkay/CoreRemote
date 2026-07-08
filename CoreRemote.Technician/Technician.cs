@@ -463,7 +463,6 @@ namespace CoreRemote.Technician
         private ComboBox _viewModeSelect;
         private Button _blockInputBtn;
         private Button _blankScreenBtn;
-        private Button _elevateUacBtn;
         private Button _audioBtn;
         private bool _isAudioMuted = true;
         private bool _isInputBlocked = false;
@@ -657,21 +656,6 @@ namespace CoreRemote.Technician
                 _audioBtn.BackColor = !_isAudioMuted ? Color.FromArgb(86, 211, 100) : Color.FromArgb(33, 38, 45);
             });
 
-            _elevateUacBtn = new Button 
-            { 
-                Text = "Yönetici Yetkisi İste (UAC)", 
-                Location = new Point(710, 10), 
-                Width = 170, 
-                Height = 30,
-                BackColor = Color.FromArgb(31, 111, 235), 
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-            _elevateUacBtn.FlatAppearance.BorderSize = 0;
-            _elevateUacBtn.Click += (s, e) => SendControlCommand("elevate_uac", "");
-
             toolbar.Controls.Add(monLbl);
             toolbar.Controls.Add(_monitorSelect);
             toolbar.Controls.Add(scaleLbl);
@@ -679,7 +663,6 @@ namespace CoreRemote.Technician
             toolbar.Controls.Add(_blockInputBtn);
             toolbar.Controls.Add(_blankScreenBtn);
             toolbar.Controls.Add(_audioBtn);
-            toolbar.Controls.Add(_elevateUacBtn);
 
             // Container ScrollPanel wrapping PictureBox screen viewer
             _screenScrollPanel = new Panel

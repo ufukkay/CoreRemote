@@ -1181,26 +1181,8 @@ namespace CoreRemote.Agent
                     int absoluteX = activeScreen.Bounds.Left + (int)(rx * activeScreen.Bounds.Width);
                     int absoluteY = activeScreen.Bounds.Top + (int)(ry * activeScreen.Bounds.Height);
 
-                    // Map screen relative mouse click onto global absolute coordinates (0-65535)
-                    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-                    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-
-                    double mappedX = (double)absoluteX * 65535.0 / screenWidth;
-                    double mappedY = (double)absoluteY * 65535.0 / screenHeight;
-
-                    INPUT[] inputs = new INPUT[1];
-                    inputs[0] = new INPUT();
-                    inputs[0].type = INPUT_MOUSE;
-                    inputs[0].mi = new MOUSEINPUT
-                    {
-                        dx = (int)mappedX,
-                        dy = (int)mappedY,
-                        dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-                        mouseData = 0,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
-                    };
-                    SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+                    // Use native SetCursorPos for correct multi-monitor coordinate mapping
+                    SetCursorPos(absoluteX, absoluteY);
                 }
                 else if (action == "mousedown" || action == "mouseup")
                 {
@@ -1529,6 +1511,8 @@ namespace CoreRemote.Agent
                 return "";
             }
         }
+    }
+
     public class ChatForm : Form
     {
         public event EventHandler<string> MessageSent;

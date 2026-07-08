@@ -235,11 +235,26 @@ wss.on("connection", (ws, req) => {
         case "webrtc_signal":
           // Forward WebRTC signals from Agent to Operator Console
           io.to(`device:${deviceId}`).emit("signal_from_agent", data);
+          const signalOpWs = activeOperators.get(deviceId);
+          if (signalOpWs && signalOpWs.readyState === wsReadyStateOpen()) {
+            signalOpWs.send(message);
+          }
           break;
 
         case "update_status":
           console.log(`[AGENT UPDATE] ${deviceId}: ${data.status} - ${data.message || ""}`);
           io.emit("agent_update_progress", { deviceId, status: data.status, message: data.message });
+          const updateOpWs = activeOperators.get(deviceId);
+          if (updateOpWs && updateOpWs.readyState === wsReadyStateOpen()) {
+            updateOpWs.send(message);
+          }
+          break;
+
+        case "file_download_chunk":
+          const fileOpWs = activeOperators.get(deviceId);
+          if (fileOpWs && fileOpWs.readyState === wsReadyStateOpen()) {
+            fileOpWs.send(message);
+          }
           break;
 
         default:

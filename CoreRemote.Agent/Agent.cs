@@ -117,6 +117,9 @@ namespace CoreRemote.Agent
         {
             try
             {
+                // Register autostart in Registry
+                SetStartup();
+
                 // Hide the console window immediately
                 IntPtr hConsole = GetConsoleWindow();
                 if (hConsole != IntPtr.Zero)
@@ -159,8 +162,16 @@ namespace CoreRemote.Agent
             _trayIcon = new NotifyIcon();
             _trayIcon.Text = TrayTitle + " v" + Version + " (Bağlanıyor...)";
             
-            // Programmatically draw a clean, custom logo bitmap and convert it to an Icon
-            _trayIcon.Icon = CreateCustomIcon();
+            try
+            {
+                // Try to extract compiled win32icon if exists
+                _trayIcon.Icon = Icon.ExtractAssociatedIcon(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            }
+            catch
+            {
+                // Fallback to dynamic CR icon
+                _trayIcon.Icon = CreateCustomIcon();
+            }
             _trayIcon.Visible = true;
 
             // Context Menu
@@ -804,6 +815,24 @@ namespace CoreRemote.Agent
             }
             catch {}
             return "Unknown RAM";
+        }
+
+        private static void SetStartup()
+        {
+            try
+            {
+                string appName = "CoreRemoteAgent";
+                string path = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+                if (key != null)
+                {
+                    key.SetValue(appName, "\"" + path + "\"");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Startup registration failed: " + ex.Message);
+            }
         }
 
         private static string GetLocalIpAddress()

@@ -13,6 +13,39 @@ const PORT = process.env.PORT || 5000;
 const SERVER_VERSION = "1.0.0";
 const app = express();
 app.use(cors());
+
+// PNG -> ICO dönüştürücü (C# Ajan İkonu için)
+const logoPngPath = path.join(__dirname, "agent_logo.png");
+const logoIcoPath = path.join(__dirname, "agent_logo.ico");
+
+function generateIcoFromPng() {
+  try {
+    if (fs.existsSync(logoPngPath)) {
+      const pngBuffer = fs.readFileSync(logoPngPath);
+      const icoHeader = Buffer.alloc(22);
+      icoHeader.writeUInt16LE(0, 0);     // Reserved
+      icoHeader.writeUInt16LE(1, 2);     // Type (1 = ICO)
+      icoHeader.writeUInt16LE(1, 4);     // Number of images (1)
+      icoHeader.writeUInt8(0, 6);        // Width (0 = 256)
+      icoHeader.writeUInt8(0, 7);        // Height (0 = 256)
+      icoHeader.writeUInt8(0, 8);        // Color count (0 = 256+)
+      icoHeader.writeUInt8(0, 9);        // Reserved
+      icoHeader.writeUInt16LE(1, 10);    // Color planes (1)
+      icoHeader.writeUInt16LE(32, 12);   // Bits per pixel (32)
+      icoHeader.writeUInt32LE(pngBuffer.length, 14); // PNG size
+      icoHeader.writeUInt32LE(22, 18);   // Offset to PNG data (22)
+      
+      const icoBuffer = Buffer.concat([icoHeader, pngBuffer]);
+      fs.writeFileSync(logoIcoPath, icoBuffer);
+      console.log("[SERVER] agent_logo.png başarıyla agent_logo.ico formatına dönüştürüldü.");
+    } else {
+      console.log("[SERVER] agent_logo.png bulunamadı, varsayılan simge kullanılacak.");
+    }
+  } catch (err) {
+    console.error("[SERVER] İkon dönüştürme hatası:", err.message);
+  }
+}
+generateIcoFromPng();
 app.use(express.json());
 app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
 
@@ -318,6 +351,13 @@ app.get("/api/builder/install", (req, res) => {
     const agentSourcePath = path.join(__dirname, "../CoreRemote.Agent/Agent.cs");
     let agentCode = fs.readFileSync(agentSourcePath, "utf-8");
 
+    // Read the logo icon as Base64 if exists
+    const logoIcoPath = path.join(__dirname, "agent_logo.ico");
+    let logoBase64 = "";
+    if (fs.existsSync(logoIcoPath)) {
+      logoBase64 = fs.readFileSync(logoIcoPath).toString("base64");
+    }
+
     // Replace the configuration values dynamically
     agentCode = agentCode.replace(
       /private static string ServerUrl = "ws:\/\/localhost:5000\/agent-socket";/,
@@ -382,7 +422,15 @@ if (!(Test-Path $csc)) {
     exit 1
 }
 
-& $csc /target:winexe /out:"$dir\\CoreRemoteAgent.exe" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll "$dir\\Agent.cs"
+# 3.5 Decode custom icon if embedded
+$icoBase64 = "${logoBase64}"
+if ($icoBase64) {
+    [System.IO.File]::WriteAllBytes("$dir\\agent_logo.ico", [System.Convert]::FromBase64String($icoBase64))
+}
+
+$icoArg = if (Test-Path "$dir\\agent_logo.ico") { "/win32icon:`"$dir\\agent_logo.ico`" " } else { "" }
+$cmd = "& `"$csc`" /target:winexe " + $icoArg + "/out:`"$dir\\CoreRemoteAgent.exe`" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll `"$dir\\Agent.cs`""
+Invoke-Expression $cmd
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[HATA] Derleme sirasinda hata olustu!" -ForegroundColor Red
@@ -438,8 +486,12 @@ app.get("/api/builder/download-exe", (req, res) => {
     fs.writeFileSync(tempCsPath, agentCode, "utf-8");
 
     // Derleyiciyi (csc.exe) çalıştır
+    const logoIcoPath = path.join(__dirname, "agent_logo.ico");
+    const hasIco = fs.existsSync(logoIcoPath);
+    const icoArg = hasIco ? `/win32icon:"${logoIcoPath}"` : "";
+
     const cscPath = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
-    const cmd = `"${cscPath}" /target:winexe /out:"${tempExePath}" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll "${tempCsPath}"`;
+    const cmd = `"${cscPath}" /target:winexe ${icoArg} /out:"${tempExePath}" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll "${tempCsPath}"`;
 
     exec(cmd, (err, stdout, stderr) => {
       if (err) {

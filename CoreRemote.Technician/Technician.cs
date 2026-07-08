@@ -723,7 +723,12 @@ namespace CoreRemote.Technician
             _screenBox.MouseDown += ScreenBox_MouseDown;
             _screenBox.MouseUp += ScreenBox_MouseUp;
             _screenBox.MouseWheel += ScreenBox_MouseWheel;
+            _screenBox.MouseClick += (s, e) => { _screenBox.Focus(); };
             _screenBox.Focus();
+
+            // Restore focus to screen after monitor move or resize
+            this.LocationChanged += (s, e) => { if (_screenBox.CanFocus) _screenBox.Focus(); };
+            this.Activated += (s, e) => { if (_screenBox.CanFocus) _screenBox.Focus(); };
 
             _screenScrollPanel.Controls.Add(_screenBox);
 
@@ -1053,6 +1058,29 @@ namespace CoreRemote.Technician
             {
                 Console.WriteLine("Operator connection error: " + ex.Message);
             }
+
+            // Auto-reconnect: if closed unexpectedly and form is still alive, reconnect
+            if (!this.IsDisposed && !_cts.IsCancellationRequested)
+            {
+                Console.WriteLine("Connection lost. Attempting reconnect in 2 seconds...");
+                await Task.Delay(2000);
+                try
+                {
+                    if (_ws != null) _ws.Dispose();
+                    _ws = new ClientWebSocket();
+                    string url = Program.ServerWsUrl + "/operator-socket?deviceId=" + Uri.EscapeDataString(_deviceId);
+                    await _ws.ConnectAsync(new Uri(url), _cts.Token);
+                    Console.WriteLine("Reconnected successfully.");
+                    // Restart streaming
+                    SendControlCommand("list_processes", "");
+                    // Loop again
+                    await ReceiveLoopAsync();
+                }
+                catch (Exception rex)
+                {
+                    Console.WriteLine("Reconnect failed: " + rex.Message);
+                }
+            }
         }
 
         private void ProcessBinaryPacket(byte[] packet)
@@ -1066,28 +1094,41 @@ namespace CoreRemote.Technician
                 {
                     byte[] jpegData = new byte[packet.Length - 1];
                     Buffer.BlockCopy(packet, 1, jpegData, 0, jpegData.Length);
-                    using (MemoryStream stream = new MemoryStream(jpegData))
+                    Bitmap bmp = null;
+                    try
                     {
+                        using (MemoryStream stream = new MemoryStream(jpegData))
                         using (Image tempImg = Image.FromStream(stream))
                         {
-                            Bitmap bmp = new Bitmap(tempImg); // Creates a copy of the pixel data, completely independent of the stream
-                            // BeginInvoke = fire-and-forget on UI thread, so we don't block the background thread
-                            _screenBox.BeginInvoke((MethodInvoker)delegate {
-                                try
-                                {
-                                    Image old = _screenBox.Image;
-                                    _screenBox.Image = bmp;
-                                    if (old != null) old.Dispose();
-
-                                    // Auto-scroll mode sizing update if selected
-                                    if (_viewModeSelect.SelectedIndex == 2)
-                                    {
-                                        _screenBox.Size = bmp.Size;
-                                    }
-                                }
-                                catch {}
-                            });
+                            bmp = new Bitmap(tempImg);
                         }
+                    }
+                    catch { return; }
+
+                    Bitmap frameBmp = bmp;
+                    // Invoke on the FORM (not the PictureBox) - Form handle survives monitor moves
+                    if (this.IsHandleCreated && !this.IsDisposed)
+                    {
+                        this.BeginInvoke((MethodInvoker)delegate {
+                            if (this.IsDisposed || _screenBox.IsDisposed) { frameBmp.Dispose(); return; }
+                            try
+                            {
+                                Image old = _screenBox.Image;
+                                _screenBox.Image = frameBmp;
+                                if (old != null) old.Dispose();
+
+                                // Auto-scroll mode sizing update if selected
+                                if (_viewModeSelect.SelectedIndex == 2)
+                                {
+                                    _screenBox.Size = frameBmp.Size;
+                                }
+                            }
+                            catch { frameBmp.Dispose(); }
+                        });
+                    }
+                    else
+                    {
+                        bmp.Dispose(); // Handle not ready yet — drop this frame
                     }
                 }
                 else if (packetType == 0x02)

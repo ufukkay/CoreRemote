@@ -124,6 +124,16 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
+// Helper: Audit Log yazıcı
+function writeAuditLog(deviceId, action, details = "") {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    "INSERT INTO audit_logs (device_id, timestamp, action, details) VALUES (?, ?, ?, ?)",
+    [deviceId || "system", now, action, details],
+    (err) => { if (err) console.error("[AUDIT ERR]", err.message); }
+  );
+}
+
 // Helper: Update Agent Status in DB
 function updateDeviceStatus(deviceId, status, telemetry = null) {
   const now = Math.floor(Date.now() / 1000);

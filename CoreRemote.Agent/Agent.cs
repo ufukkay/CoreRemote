@@ -27,6 +27,7 @@ namespace CoreRemote.Agent
 
         private static ClientWebSocket _ws;
         private static CancellationTokenSource _cts;
+        private static readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         private static bool _isStreaming = false;
         private static int _frameIntervalMs = 100; // ~10 FPS default
         private static double _jpegQuality = 60.0; // Compression quality
@@ -626,7 +627,7 @@ namespace CoreRemote.Agent
                         wsPacket[0] = 0x01; // Frame type identifier
                         Buffer.BlockCopy(frameBytes, 0, wsPacket, 1, frameBytes.Length);
 
-                        await _ws.SendAsync(new ArraySegment<byte>(wsPacket), WebSocketMessageType.Binary, true, _cts.Token);
+                        await SendWsAsync(wsPacket, WebSocketMessageType.Binary);
                     }
                 }
                 catch (Exception ex)
@@ -848,7 +849,7 @@ namespace CoreRemote.Agent
                         byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
                         if (_ws != null && _ws.State == WebSocketState.Open)
                         {
-                            await _ws.SendAsync(new ArraySegment<byte>(payloadBytes), WebSocketMessageType.Text, true, _cts.Token);
+                            await SendWsAsync(payloadBytes, WebSocketMessageType.Text);
                         }
                     }
                 }
@@ -1001,7 +1002,7 @@ namespace CoreRemote.Agent
                             captureClient.ReleaseBuffer(numFrames);
 
                             // Send audio binary data packet asynchronously over WebSocket
-                            _ws.SendAsync(new ArraySegment<byte>(audioData), WebSocketMessageType.Binary, true, _cts.Token).Wait();
+                            SendWsAsync(audioData, WebSocketMessageType.Binary).Wait();
                         }
                     }
                     Thread.Sleep(15);
@@ -1078,7 +1079,7 @@ namespace CoreRemote.Agent
                 "}";
 
                 byte[] bytes = Encoding.UTF8.GetBytes(payload);
-                await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+                await SendWsAsync(bytes, WebSocketMessageType.Text);
                 Console.WriteLine("Telemetry sent!");
             }
             catch (Exception ex)
@@ -1101,10 +1102,30 @@ namespace CoreRemote.Agent
                 byte[] bytes = Encoding.UTF8.GetBytes(payload);
                 if (_ws != null && _ws.State == WebSocketState.Open)
                 {
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+                    await SendWsAsync(bytes, WebSocketMessageType.Text);
                 }
             }
             catch {}
+        }
+
+        private static async Task SendWsAsync(byte[] data, WebSocketMessageType type)
+        {
+            try
+            {
+                await _sendLock.WaitAsync();
+                if (_ws != null && _ws.State == WebSocketState.Open)
+                {
+                    await _ws.SendAsync(new ArraySegment<byte>(data), type, true, _cts.Token);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("WebSocket Send Error: " + ex.Message);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
         }
 
         private static void ProcessControlSignal(string signalJson)
@@ -1196,6 +1217,44 @@ namespace CoreRemote.Agent
                     };
                     SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
                 }
+                else if (action == "scroll")
+                {
+                    // deltaY: pozitif = aşağı, negatif = yukarı (tarayıcı standardı)
+                    string deltaStr = GetJsonValue(signalJson, "deltaY");
+                    int delta = 0;
+                    int.TryParse(deltaStr, out delta);
+                    // Windows WHEEL_DELTA = 120 per notch; tarayıcıdan gelen delta ~100 normalleştiriyoruz
+                    int wheelAmount = -(delta / 100) * 120;
+                    if (wheelAmount == 0) wheelAmount = (delta < 0) ? 120 : -120;
+
+                    INPUT[] inputs = new INPUT[1];
+                    inputs[0] = new INPUT();
+                    inputs[0].type = INPUT_MOUSE;
+                    inputs[0].mi = new MOUSEINPUT
+                    {
+                        dx = 0,
+                        dy = 0,
+                        mouseData = wheelAmount,
+                        dwFlags = MOUSEEVENTF_WHEEL,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    };
+                    SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+                }
+                else if (action == "middledown" || action == "middleup")
+                {
+                    int flag = (action == "middledown") ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+                    INPUT[] inputs = new INPUT[1];
+                    inputs[0] = new INPUT();
+                    inputs[0].type = INPUT_MOUSE;
+                    inputs[0].mi = new MOUSEINPUT
+                    {
+                        dwFlags = flag,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    };
+                    SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+                }
             }
             catch (Exception ex)
             {
@@ -1280,7 +1339,7 @@ namespace CoreRemote.Agent
                 byte[] bytes = Encoding.UTF8.GetBytes(payload);
                 if (_ws != null && _ws.State == WebSocketState.Open)
                 {
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+                    await SendWsAsync(bytes, WebSocketMessageType.Text);
                 }
             }
             catch (Exception ex)

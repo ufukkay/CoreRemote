@@ -447,6 +447,7 @@ namespace CoreRemote.Technician
         private string _deviceId;
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
+        private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
         // UI Components
         private Panel _sidebar;
@@ -506,48 +507,63 @@ namespace CoreRemote.Technician
             this.FormClosing += (s, e) => Disconnect();
         }
 
+        private bool _sidebarExpanded = false;
+        private Button _toggleSidebarBtn;
+
         private void InitializeLayout()
         {
-            // Left Sidebar Setup
+            // Left Sidebar Setup (Initial narrow width: 60px like AnyDesk)
             _sidebar = new Panel
             {
                 Dock = DockStyle.Left,
-                Width = 220,
+                Width = 60,
                 BackColor = Color.FromArgb(22, 27, 34),
-                Padding = new Padding(0, 10, 0, 10)
+                Padding = new Padding(0, 5, 0, 10)
             };
 
-            Label logo = new Label
+            // Hamburger menu button at the top
+            _toggleSidebarBtn = new Button
             {
-                Text = "⚡ CoreRemote",
-                Font = new Font("Segoe UI", 14, FontStyle.Bold),
-                ForeColor = Color.FromArgb(88, 166, 255),
+                Text = "  ☰",
                 Dock = DockStyle.Top,
-                Height = 50,
-                TextAlign = ContentAlignment.MiddleCenter
+                Height = 45,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.FromArgb(88, 166, 255),
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
-            _sidebar.Controls.Add(logo);
+            _toggleSidebarBtn.FlatAppearance.BorderSize = 0;
+            _toggleSidebarBtn.Click += (s, e) => ToggleSidebar();
+            _sidebar.Controls.Add(_toggleSidebarBtn);
+
+            // Separator line
+            Panel separator = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Color.FromArgb(48, 54, 61) };
+            _sidebar.Controls.Add(separator);
+            _sidebar.Controls.SetChildIndex(separator, 0);
 
             // Navigation buttons creation
             string[] tabNames = { "🖥️ Canlı Ekran", "📁 Dosya Gezgini", "⚙️ Görev Yöneticisi", "💻 Uzak Konsol", "💬 Sohbet" };
             _navButtons = new Button[tabNames.Length];
             
-            Panel navContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 20, 0, 0) };
+            Panel navContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
             _sidebar.Controls.Add(navContainer);
-            _sidebar.Controls.SetChildIndex(navContainer, 0); // Put under logo
+            _sidebar.Controls.SetChildIndex(navContainer, 0); // Put under separator
 
             for (int i = tabNames.Length - 1; i >= 0; i--)
             {
                 int index = i;
                 Button btn = new Button
                 {
-                    Text = "   " + tabNames[i],
+                    Text = tabNames[i].Substring(0, 2), // Show only icon representation at first
+                    Tag = tabNames[i], // Store full name in Tag
                     Dock = DockStyle.Top,
                     Height = 50,
                     FlatStyle = FlatStyle.Flat,
                     ForeColor = Color.FromArgb(201, 209, 217),
                     BackColor = Color.Transparent,
-                    TextAlign = ContentAlignment.MiddleLeft,
+                    TextAlign = ContentAlignment.MiddleCenter,
                     Font = new Font("Segoe UI", 10, FontStyle.Bold),
                     Cursor = Cursors.Hand
                 };
@@ -588,6 +604,29 @@ namespace CoreRemote.Technician
 
             // Set default view active button color
             SwitchTab(0);
+        }
+
+        private void ToggleSidebar()
+        {
+            _sidebarExpanded = !_sidebarExpanded;
+            _sidebar.Width = _sidebarExpanded ? 220 : 60;
+
+            for (int i = 0; i < _navButtons.Length; i++)
+            {
+                string fullName = _navButtons[i].Tag.ToString();
+                if (_sidebarExpanded)
+                {
+                    _navButtons[i].Text = "   " + fullName;
+                    _navButtons[i].TextAlign = ContentAlignment.MiddleLeft;
+                }
+                else
+                {
+                    _navButtons[i].Text = fullName.Substring(0, 2);
+                    _navButtons[i].TextAlign = ContentAlignment.MiddleCenter;
+                }
+            }
+
+            _toggleSidebarBtn.Text = _sidebarExpanded ? "  ☰   Kapat" : "  ☰";
         }
 
         private void SwitchTab(int index)
@@ -682,6 +721,7 @@ namespace CoreRemote.Technician
             _screenBox.MouseMove += ScreenBox_MouseMove;
             _screenBox.MouseDown += ScreenBox_MouseDown;
             _screenBox.MouseUp += ScreenBox_MouseUp;
+            _screenBox.MouseWheel += ScreenBox_MouseWheel;
             _screenBox.Focus();
 
             _screenScrollPanel.Controls.Add(_screenBox);
@@ -1250,6 +1290,15 @@ namespace CoreRemote.Technician
             SendInputSignal(json);
         }
 
+        private void ScreenBox_MouseWheel(object sender, MouseEventArgs e)
+        {
+            // Windows Delta = 120 per notch; tarayıcı standardına normalize ediyoruz
+            int normalizedDelta = -(e.Delta / 120) * 100;
+            if (normalizedDelta == 0) normalizedDelta = (e.Delta > 0) ? -100 : 100;
+            string json = "{\"action\":\"scroll\",\"deltaY\":" + normalizedDelta + "}";
+            SendInputSignal(json);
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (_tabControl.SelectedTab.Text == "Masaüstü")
@@ -1281,7 +1330,7 @@ namespace CoreRemote.Technician
                 if (_ws != null && _ws.State == WebSocketState.Open)
                 {
                     byte[] bytes = Encoding.UTF8.GetBytes(jsonPayload);
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+                    await SendWsAsync(bytes, WebSocketMessageType.Text);
                 }
             }
             catch {}
@@ -1302,10 +1351,30 @@ namespace CoreRemote.Technician
                 byte[] bytes = Encoding.UTF8.GetBytes(payload);
                 if (_ws != null && _ws.State == WebSocketState.Open)
                 {
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
+                    await SendWsAsync(bytes, WebSocketMessageType.Text);
                 }
             }
             catch {}
+        }
+
+        private async Task SendWsAsync(byte[] data, WebSocketMessageType type)
+        {
+            try
+            {
+                await _sendLock.WaitAsync();
+                if (_ws != null && _ws.State == WebSocketState.Open)
+                {
+                    await _ws.SendAsync(new ArraySegment<byte>(data), type, true, _cts.Token);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Technician Send Error: " + ex.Message);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
         }
 
         private void RequestFileList()
@@ -1343,7 +1412,7 @@ namespace CoreRemote.Technician
                             byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
                             if (_ws != null && _ws.State == WebSocketState.Open)
                             {
-                                await _ws.SendAsync(new ArraySegment<byte>(payloadBytes), WebSocketMessageType.Text, true, _cts.Token);
+                                await SendWsAsync(payloadBytes, WebSocketMessageType.Text);
                             }
                             isFirst = false;
                         }

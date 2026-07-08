@@ -448,6 +448,7 @@ namespace CoreRemote.Technician
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+        private DateTime _lastMouseMoveTime = DateTime.MinValue;
 
         // UI Components
         private Panel _sidebar;
@@ -1264,6 +1265,9 @@ namespace CoreRemote.Technician
         private void ScreenBox_MouseMove(object sender, MouseEventArgs e)
         {
             if (_screenBox.Image == null) return;
+            if ((DateTime.Now - _lastMouseMoveTime).TotalMilliseconds < 30) return;
+            _lastMouseMoveTime = DateTime.Now;
+
             Point p = TranslateCoordinates(e.Location);
             double rx = (double)p.X / 65535.0;
             double ry = (double)p.Y / 65535.0;

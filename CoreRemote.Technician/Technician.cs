@@ -1037,12 +1037,14 @@ namespace CoreRemote.Technician
 
                         if (result.MessageType == WebSocketMessageType.Binary)
                         {
-                            ProcessBinaryPacket(packet);
+                            // Process on background thread so receive loop is never blocked
+                            byte[] packetCopy = packet;
+                            Task.Run(() => ProcessBinaryPacket(packetCopy));
                         }
                         else
                         {
                             string text = Encoding.UTF8.GetString(packet);
-                            ProcessTextPacket(text);
+                            Task.Run(() => ProcessTextPacket(text));
                         }
                     }
                 }
@@ -1069,16 +1071,21 @@ namespace CoreRemote.Technician
                         using (Image tempImg = Image.FromStream(stream))
                         {
                             Bitmap bmp = new Bitmap(tempImg); // Creates a copy of the pixel data, completely independent of the stream
-                            _screenBox.Invoke((MethodInvoker)delegate {
-                                Image old = _screenBox.Image;
-                                _screenBox.Image = bmp;
-                                if (old != null) old.Dispose();
-
-                                // Auto-scroll mode sizing update if selected
-                                if (_viewModeSelect.SelectedIndex == 2)
+                            // BeginInvoke = fire-and-forget on UI thread, so we don't block the background thread
+                            _screenBox.BeginInvoke((MethodInvoker)delegate {
+                                try
                                 {
-                                    _screenBox.Size = bmp.Size;
+                                    Image old = _screenBox.Image;
+                                    _screenBox.Image = bmp;
+                                    if (old != null) old.Dispose();
+
+                                    // Auto-scroll mode sizing update if selected
+                                    if (_viewModeSelect.SelectedIndex == 2)
+                                    {
+                                        _screenBox.Size = bmp.Size;
+                                    }
                                 }
+                                catch {}
                             });
                         }
                     }

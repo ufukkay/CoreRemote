@@ -449,6 +449,7 @@ namespace CoreRemote.Technician
         private CancellationTokenSource _cts;
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
+        private volatile bool _frameProcessing = false; // Drop frames while previous is still rendering
 
         // UI Components
         private Panel _sidebar;
@@ -1042,9 +1043,17 @@ namespace CoreRemote.Technician
 
                         if (result.MessageType == WebSocketMessageType.Binary)
                         {
-                            // Process on background thread so receive loop is never blocked
-                            byte[] packetCopy = packet;
-                            Task.Run(() => ProcessBinaryPacket(packetCopy));
+                            // Only process if NOT already rendering a frame — drop to avoid UI thread saturation
+                            if (!_frameProcessing)
+                            {
+                                _frameProcessing = true;
+                                byte[] packetCopy = packet;
+                                Task.Run(() => {
+                                    try { ProcessBinaryPacket(packetCopy); }
+                                    finally { _frameProcessing = false; }
+                                });
+                            }
+                            // else: drop this frame — the previous one is still being decoded
                         }
                         else
                         {
@@ -1375,17 +1384,17 @@ namespace CoreRemote.Technician
 
         // ── FEATURE ACTIONS DISPATCHERS ──────────────────────────────────────
 
-        private async void SendInputSignal(string jsonPayload)
+        private void SendInputSignal(string jsonPayload)
         {
-            try
-            {
-                if (_ws != null && _ws.State == WebSocketState.Open)
-                {
-                    byte[] bytes = Encoding.UTF8.GetBytes(jsonPayload);
-                    await SendWsAsync(bytes, WebSocketMessageType.Text);
-                }
-            }
-            catch {}
+            // CRITICAL: Must NOT use async void here. async void continuations run on the
+            // UI thread (WinForms SyncContext), competing with frame rendering → freeze.
+            // Dispatch entirely to thread pool instead.
+            if (_ws == null || _ws.State != WebSocketState.Open) return;
+            byte[] bytes = Encoding.UTF8.GetBytes(jsonPayload);
+            Task.Run(async () => {
+                try { await SendWsAsync(bytes, WebSocketMessageType.Text); }
+                catch { }
+            });
         }
 
         private async void SendControlCommand(string action, string additionalJson)

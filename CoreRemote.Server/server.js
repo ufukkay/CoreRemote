@@ -213,8 +213,13 @@ wss.on("connection", (ws, req) => {
       switch (type) {
         case "telemetry":
           updateDeviceStatus(deviceId, "online", data);
-          // Forward telemetry directly to room watching this device
           io.to(`device:${deviceId}`).emit("agent_telemetry", { deviceId, telemetry: data });
+          
+          // Teknisyen uygulamasına da telemetri paketini yönlendir (monitör listesi için)
+          const opWs = activeOperators.get(deviceId);
+          if (opWs && opWs.readyState === wsReadyStateOpen()) {
+            opWs.send(message);
+          }
           break;
 
         case "webrtc_signal":
@@ -261,13 +266,14 @@ operatorWss.on("connection", (ws, req) => {
   console.log(`[OPERATOR +] Teknisyen bağlandı, hedef cihaz: ${deviceId}`);
   activeOperators.set(deviceId, ws);
 
-  // Ajan eğer aktifse ona ekran yayınını başlatma komutunu gönder
+  // Ajan eğer aktifse ona ekran yayınını başlatma komutunu gönder ve güncel telemetri iste
   const agentWs = activeAgents.get(deviceId);
   if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
     agentWs.send(JSON.stringify({
       type: "webrtc_signal",
       data: { action: "start_stream", quality: 60, interval: 100 }
     }));
+    agentWs.send(JSON.stringify({ type: "request_telemetry" }));
   }
 
   ws.on("message", (message) => {
@@ -648,6 +654,11 @@ app.get("/api/builder/download-technician", (req, res) => {
     try { fs.unlinkSync(tempExePath); } catch (e) {}
     res.status(500).send("Teknisyen uygulaması oluşturulamadı: " + err.message);
   }
+});
+
+// Teknisyen uygulamasının güncel versiyonunu dönen API
+app.get("/api/technician/version", (req, res) => {
+  res.json({ version: "1.1.0" });
 });
 
 // Sunucuyu kendi kendine güncelleyen (git pull + deploy-iis.ps1) API

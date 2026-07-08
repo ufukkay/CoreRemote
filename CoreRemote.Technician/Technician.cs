@@ -19,14 +19,27 @@ namespace CoreRemote.Technician
     {
         public static string ServerHttpUrl = "http://localhost:5000";
         public static string ServerWsUrl = "ws://localhost:5000";
+        public static string Version = "1.1.0"; // Current local version
+
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
 
         [STAThread]
         static void Main(string[] args)
         {
+            try
+            {
+                SetProcessDPIAware();
+            }
+            catch {}
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
             RegisterCustomProtocol();
+
+            // Run self-update check in background
+            Task.Run(async () => await CheckForUpdatesAsync());
 
             if (args.Length > 0 && args[0].StartsWith("coreremote://", StringComparison.OrdinalIgnoreCase))
             {
@@ -40,6 +53,132 @@ namespace CoreRemote.Technician
             }
 
             Application.Run(new MainForm());
+        }
+
+        private static async Task CheckForUpdatesAsync()
+        {
+            try
+            {
+                // Delay slightly to let the UI load
+                await Task.Delay(2000);
+
+                string url = ServerHttpUrl + "/api/technician/version";
+                using (WebClient client = new WebClient())
+                {
+                    client.Encoding = Encoding.UTF8;
+                    string json = await client.DownloadStringTaskAsync(new Uri(url));
+                    string serverVer = GetJsonValue(json, "version");
+                    
+                    if (!string.IsNullOrEmpty(serverVer) && serverVer.Trim() != Version)
+                    {
+                        Form activeForm = Form.ActiveForm;
+                        if (activeForm != null && activeForm.InvokeRequired)
+                        {
+                            activeForm.Invoke((MethodInvoker)delegate {
+                                PromptUpdate(serverVer);
+                            });
+                        }
+                        else
+                        {
+                            PromptUpdate(serverVer);
+                        }
+                    }
+                }
+            }
+            catch {}
+        }
+
+        private static void PromptUpdate(string serverVer)
+        {
+            var res = MessageBox.Show("Yeni bir Teknisyen Uygulaması sürümü mevcut (v" + serverVer + "). Şimdi güncellemek ister misiniz?", "Güncelleme Mevcut", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (res == DialogResult.Yes)
+            {
+                Task.Run(async () => await TriggerSelfUpdateAsync());
+            }
+        }
+
+        private static async Task TriggerSelfUpdateAsync()
+        {
+            try
+            {
+                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                string installDir = Path.GetDirectoryName(currentExePath);
+                string newExePath = Path.Combine(installDir, "CoreRemoteViewer_new.exe");
+                string batPath = Path.Combine(installDir, "update_tech.bat");
+
+                string downloadUrl = ServerHttpUrl + "/api/builder/download-technician";
+                using (WebClient wc = new WebClient())
+                {
+                    await wc.DownloadFileTaskAsync(new Uri(downloadUrl), newExePath);
+                }
+
+                if (File.Exists(newExePath) && new FileInfo(newExePath).Length > 0)
+                {
+                    StringBuilder sb = new StringBuilder();
+                    sb.AppendLine("@echo off");
+                    sb.AppendLine("ping 127.0.0.1 -n 3 > nul");
+                    sb.AppendLine("move /y \"" + newExePath + "\" \"" + currentExePath + "\"");
+                    sb.AppendLine("start \"\" \"" + currentExePath + "\"");
+                    sb.AppendLine("del \"%~f0\"");
+
+                    File.WriteAllText(batPath, sb.ToString());
+
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = "/c \"" + batPath + "\"",
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        UseShellExecute = true
+                    };
+                    Process.Start(psi);
+                    Environment.Exit(0);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Güncelleme başarısız: " + ex.Message, "Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private static string GetJsonValue(string json, string key)
+        {
+            try
+            {
+                string searchKey = "\"" + key + "\"";
+                int keyIdx = json.IndexOf(searchKey);
+                if (keyIdx == -1) return "";
+
+                int colonIdx = json.IndexOf(':', keyIdx + searchKey.Length);
+                if (colonIdx == -1) return "";
+
+                int valueStart = colonIdx + 1;
+                while (valueStart < json.Length && (json[valueStart] == ' ' || json[valueStart] == '\t' || json[valueStart] == '\r' || json[valueStart] == '\n'))
+                {
+                    valueStart++;
+                }
+
+                if (valueStart >= json.Length) return "";
+
+                if (json[valueStart] == '"')
+                {
+                    int stringEnd = json.IndexOf('"', valueStart + 1);
+                    if (stringEnd == -1) return "";
+                    return json.Substring(valueStart + 1, stringEnd - valueStart - 1);
+                }
+                else
+                {
+                    int endIdx = valueStart;
+                    while (endIdx < json.Length && json[endIdx] != ',' && json[endIdx] != '}' && json[endIdx] != ']')
+                    {
+                        endIdx++;
+                    }
+                    return json.Substring(valueStart, endIdx - valueStart).Trim();
+                }
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         private static string ParseDeviceIdFromUrl(string url)

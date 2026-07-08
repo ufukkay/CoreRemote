@@ -70,6 +70,9 @@ namespace CoreRemote.Agent
         private const int SM_CXSCREEN = 0;
         private const int SM_CYSCREEN = 1;
 
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
+
         // Win32 Input Block & Screen standby APIs
         [DllImport("user32.dll")]
         public static extern bool BlockInput(bool fBlockIt);
@@ -140,6 +143,9 @@ namespace CoreRemote.Agent
         {
             try
             {
+                // Make process DPI-aware to prevent screen capture scaling offset bugs
+                SetProcessDPIAware();
+
                 // Register autostart in Registry
                 SetStartup();
 

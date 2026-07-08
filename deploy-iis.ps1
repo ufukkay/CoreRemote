@@ -20,7 +20,7 @@ Write-Host ">> Dosyalar kopyalanıyor..." -ForegroundColor Cyan
 $SrcPath = $PSScriptRoot
 
 # Kopyalanacak öğeler
-$ItemsToCopy = @("CoreRemote.Server", "coreremote-console", "web.config")
+$ItemsToCopy = @("CoreRemote.Server", "coreremote-console", "CoreRemote.Agent", "web.config")
 
 foreach ($item in $ItemsToCopy) {
     $srcItem = Join-Path $SrcPath $item

@@ -910,12 +910,15 @@ export default function Home() {
                             ✓ Sunucu Sisteminiz Güncel (v{serverVersion})
                           </div>
                           <button
-                            onClick={checkAndUpdateServerFlow}
-                            disabled={checkingServerUpdate}
-                            className="w-full border border-[#30363d] hover:bg-[#21262d] text-[#8b949e] hover:text-[#f0f6fc] font-medium py-1.5 rounded transition-all text-[11px] cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => {
+                              if (confirm("Sunucu kodları yerel Git deposundan (git pull) çekilecek ve sistem yeniden derlenecektir. Onaylıyor musunuz?")) {
+                                executeServerUpdate();
+                              }
+                            }}
+                            className="w-full bg-[#1f6feb] hover:bg-[#388bfd] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5"
                           >
-                            <RefreshCw size={12} className={checkingServerUpdate ? "animate-spin" : ""} />
-                            {checkingServerUpdate ? "Kontrol Ediliyor..." : "Sistemi Yeniden Derle / Force Update"}
+                            <RefreshCw size={14} />
+                            Sunucuyu Güncelle (Git Pull & Deploy)
                           </button>
                         </div>
                       )}

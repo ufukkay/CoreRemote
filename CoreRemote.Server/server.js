@@ -1,0 +1,405 @@
+const express = require("express");
+const http = require("http");
+const cors = require("cors");
+const { Server } = require("socket.io");
+const { WebSocketServer } = require("ws");
+const url = require("url");
+const sqlite3 = require("sqlite3").verbose();
+const path = require("path");
+const fs = require("fs");
+
+const PORT = process.env.PORT || 5000;
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
+
+const server = http.createServer(app);
+
+// Database Setup
+const dbPath = path.join(__dirname, "coreremote.db");
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error("Database connection error:", err.message);
+  } else {
+    console.log("Connected to SQLite database.");
+    initializeDatabase();
+  }
+});
+
+function initializeDatabase() {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY,
+      hostname TEXT,
+      username TEXT,
+      os_version TEXT,
+      ram TEXT,
+      cpu TEXT,
+      ip_address TEXT,
+      status TEXT DEFAULT 'offline',
+      last_seen INTEGER,
+      agent_version TEXT,
+      logo_customized TEXT DEFAULT 'false'
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT,
+      timestamp INTEGER,
+      action TEXT,
+      details TEXT
+    )
+  `);
+}
+
+// Socket.IO for Web Dashboard
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+// Raw WebSockets for C# Agents
+const wss = new WebSocketServer({ noServer: true });
+
+// Active Agent connections map: deviceId -> ws connection
+const activeAgents = new Map();
+
+// Upgrade HTTP server to WebSockets for /agent-socket
+server.on("upgrade", (request, socket, head) => {
+  const pathname = url.parse(request.url).pathname;
+
+  if (pathname === "/agent-socket") {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+// Helper: Update Agent Status in DB
+function updateDeviceStatus(deviceId, status, telemetry = null) {
+  const now = Math.floor(Date.now() / 1000);
+  if (telemetry) {
+    const query = `
+      INSERT INTO devices (id, hostname, username, os_version, ram, cpu, ip_address, status, last_seen, agent_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        hostname=excluded.hostname,
+        username=excluded.username,
+        os_version=excluded.os_version,
+        ram=excluded.ram,
+        cpu=excluded.cpu,
+        ip_address=excluded.ip_address,
+        status=excluded.status,
+        last_seen=excluded.last_seen,
+        agent_version=excluded.agent_version
+    `;
+    db.run(query, [
+      deviceId,
+      telemetry.hostname || "-",
+      telemetry.username || "-",
+      telemetry.osVersion || "-",
+      telemetry.ram || "-",
+      telemetry.cpu || "-",
+      telemetry.ipAddress || "-",
+      status,
+      now,
+      telemetry.version || "1.0.0"
+    ], (err) => {
+      if (err) console.error("Error saving telemetry:", err.message);
+    });
+  } else {
+    db.run(
+      "UPDATE devices SET status = ?, last_seen = ? WHERE id = ?",
+      [status, now, deviceId],
+      (err) => {
+        if (err) console.error("Error updating status:", err.message);
+      }
+    );
+  }
+
+  // Broadcast to all dashboard clients
+  io.emit("device_status_change", { deviceId, status, timestamp: now });
+}
+
+// ── Agent (WebSocket) Connection Handler ──────────────────────────────
+wss.on("connection", (ws, req) => {
+  const parameters = url.parse(req.url, true).query;
+  const deviceId = parameters.deviceId;
+
+  if (!deviceId) {
+    ws.close(1008, "Device ID Required");
+    return;
+  }
+
+  console.log(`[AGENT +] Connected: ${deviceId}`);
+  activeAgents.set(deviceId, ws);
+  ws.deviceId = deviceId;
+
+  updateDeviceStatus(deviceId, "online");
+
+  ws.on("message", (message, isBinary) => {
+    // Check if binary screen frame (starts with 0x01)
+    if (isBinary || (Buffer.isBuffer(message) && message[0] === 0x01)) {
+      io.to(`device:${deviceId}`).emit("agent_frame", message);
+      return;
+    }
+
+    try {
+      const payload = JSON.parse(message.toString());
+      const { type, data } = payload;
+
+      switch (type) {
+        case "telemetry":
+          updateDeviceStatus(deviceId, "online", data);
+          // Forward telemetry directly to room watching this device
+          io.to(`device:${deviceId}`).emit("agent_telemetry", { deviceId, telemetry: data });
+          break;
+
+        case "webrtc_signal":
+          // Forward WebRTC signals from Agent to Operator Console
+          io.to(`device:${deviceId}`).emit("signal_from_agent", data);
+          break;
+
+        case "update_status":
+          console.log(`[AGENT UPDATE] ${deviceId}: ${data.status} - ${data.message || ""}`);
+          io.to(`device:${deviceId}`).emit("agent_update_progress", data);
+          break;
+
+        default:
+          console.log(`[AGENT MSG] Unknown message type: ${type}`);
+      }
+    } catch (err) {
+      if (!Buffer.isBuffer(message)) {
+        console.error(`[WS MSG ERR] Device: ${deviceId}`, err.message);
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    console.log(`[AGENT -] Disconnected: ${deviceId}`);
+    activeAgents.delete(deviceId);
+    updateDeviceStatus(deviceId, "offline");
+  });
+
+  ws.on("error", (err) => {
+    console.error(`[WS ERR] Device: ${deviceId}`, err.message);
+  });
+});
+
+// ── Dashboard (Socket.IO) Handler ───────────────────────────────────
+io.on("connection", (socket) => {
+  console.log(`[DASHBOARD +] Operator connected: ${socket.id}`);
+
+  // Operator watches a specific device's room
+  socket.on("watch_device", (deviceId) => {
+    socket.join(`device:${deviceId}`);
+    console.log(`[DASHBOARD] Operator watching device: ${deviceId}`);
+
+    // If agent is online, ask it to send fresh telemetry
+    const agentWs = activeAgents.get(deviceId);
+    if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
+      agentWs.send(JSON.stringify({ type: "request_telemetry" }));
+    }
+  });
+
+  socket.on("unwatch_device", (deviceId) => {
+    socket.leave(`device:${deviceId}`);
+    console.log(`[DASHBOARD] Operator stopped watching: ${deviceId}`);
+  });
+
+  // WebRTC Signal from Operator to Agent
+  socket.on("signal_to_agent", ({ deviceId, signal }) => {
+    const agentWs = activeAgents.get(deviceId);
+    if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
+      agentWs.send(JSON.stringify({ type: "webrtc_signal", data: signal }));
+    } else {
+      socket.emit("error_message", { message: "Agent is offline" });
+    }
+  });
+
+  // Remote Update trigger
+  socket.on("trigger_update", ({ deviceId, updateUrl }) => {
+    const agentWs = activeAgents.get(deviceId);
+    if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
+      agentWs.send(JSON.stringify({ type: "trigger_update", data: { url: updateUrl } }));
+      console.log(`[UPDATE TRIGGERED] Sent update request to ${deviceId} with URL: ${updateUrl}`);
+    } else {
+      socket.emit("error_message", { message: "Agent offline, cannot trigger update." });
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log(`[DASHBOARD -] Operator disconnected: ${socket.id}`);
+  });
+});
+
+// Helper for WS ready state
+function wsReadyStateOpen() {
+  return 1; // WebSocket.OPEN
+}
+
+// ── HTTP API Uç Noktaları (REST API) ──────────────────────────────────
+
+// Cihaz listesini getir
+app.get("/api/devices", (req, res) => {
+  db.all("SELECT * FROM devices ORDER BY last_seen DESC", [], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    // Ekleme yapalım: Canlı soket bağlantısı var mı kontrolü
+    const devices = rows.map(r => ({
+      ...r,
+      wsConnected: activeAgents.has(r.id)
+    }));
+    res.json(devices);
+  });
+});
+
+// Güncelleme sorgulama API'si (GitHub Releases entegrasyonlu)
+app.get("/api/update/check", async (req, res) => {
+  try {
+    const response = await fetch("https://api.github.com/repos/ufukkay/CoreRemote/releases/latest", {
+      headers: { "User-Agent": "CoreRemote-Server" }
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub API returned status ${response.status}`);
+    }
+    const data = await response.json();
+    const latestVersion = data.tag_name ? data.tag_name.replace(/^v/, "") : "1.0.0";
+    
+    // CoreRemoteAgent.exe asset'ini bul
+    const asset = data.assets.find(a => a.name === "CoreRemoteAgent.exe");
+    const downloadUrl = asset ? asset.browser_download_url : "";
+
+    res.json({
+      latestVersion,
+      url: downloadUrl
+    });
+  } catch (err) {
+    console.error("Error checking updates from GitHub:", err.message);
+    res.status(500).json({ error: "Failed to check update", details: err.message });
+  }
+});
+
+// Test için uzaktan güncelleme tetikleme API'si
+app.get("/api/test/trigger-update", (req, res) => {
+  const deviceId = req.query.deviceId || "DESKTOP-SIH3FAC";
+  const agentWs = activeAgents.get(deviceId);
+  if (agentWs && agentWs.readyState === wsReadyStateOpen()) {
+    const updateUrl = `http://${req.headers.host}/downloads/CoreRemote.Agent.Setup.exe`;
+    agentWs.send(JSON.stringify({ type: "trigger_update", data: { url: updateUrl } }));
+    console.log(`[HTTP TRIGGER] Sent update request to ${deviceId} via REST API`);
+    return res.send(`Triggered update for ${deviceId} with ${updateUrl}`);
+  }
+  res.status(404).send(`Agent ${deviceId} offline or not found`);
+});
+
+// Ajan Özelleştirilmiş Kurulum Scripti (PowerShell) API'si
+app.get("/api/builder/install", (req, res) => {
+  const host = req.headers.host;
+  const title = req.query.title || "CoreRemote Ajanı";
+  const serverUrl = req.query.server || `ws://${host.split(':')[0]}:5000/agent-socket`;
+
+  try {
+    const agentSourcePath = path.join(__dirname, "../CoreRemote.Agent/Agent.cs");
+    let agentCode = fs.readFileSync(agentSourcePath, "utf-8");
+
+    // Replace the configuration values dynamically
+    agentCode = agentCode.replace(
+      /private static string ServerUrl = "ws:\/\/localhost:5000\/agent-socket";/,
+      `private static string ServerUrl = "${serverUrl}";`
+    );
+    agentCode = agentCode.replace(
+      /private static string TrayTitle = "CoreRemote Ajanı";/,
+      `private static string TrayTitle = "${title}";`
+    );
+    agentCode = agentCode.replace(
+      /private static string ApiUrl = "http:\/\/localhost:5000\/api\/update\/check";/,
+      `private static string ApiUrl = "http://${host}/api/update/check";`
+    );
+
+    // Base64 encode to prevent encoding and escape issues in PowerShell here-string
+    const base64Code = Buffer.from(agentCode, "utf-8").toString("base64");
+
+    const psScript = `<#
+.SYNOPSIS
+    CoreRemote Agent Unified Installer
+    Installs, compiles and runs the customized CoreRemote Agent.
+#>
+
+$ErrorActionPreference = "Stop"
+$dir = "C:\\ProgramData\\CoreRemote"
+$logFile = "$dir\\setup.log"
+
+if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+Write-Host "=> CoreRemote Ajan kurulumu basliyor..." -ForegroundColor Cyan
+Add-Content -Path $logFile -Value "Installer started at $(Get-Date)"
+
+# 1. Check Administrator privileges
+if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "[HATA] Lutfen PowerShell'i Yonetici (Admin) olarak calistirin." -ForegroundColor Red
+    Add-Content -Path $logFile -Value "Error: Not running as Administrator"
+    exit 1
+}
+
+# 2. Stop running agent
+Write-Host ">> Eski ajan surumu kontrol ediliyor..." -ForegroundColor Gray
+Stop-Process -Name CoreRemoteAgent -Force -ErrorAction SilentlyContinue
+
+# 3. Decode C# Agent code
+Write-Host ">> Kod cozumleniyor..." -ForegroundColor Gray
+$base64Code = "${base64Code}"
+$bytes = [System.Convert]::FromBase64String($base64Code)
+$utf8 = New-Object System.Text.UTF8Encoding
+$code = $utf8.GetString($bytes)
+$code | Out-File -FilePath "$dir\\Agent.cs" -Encoding UTF8
+
+# 4. Compile C# code
+Write-Host ">> Derleme baslatiliyor (csc.exe)..." -ForegroundColor Gray
+$csc = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
+if (!(Test-Path $csc)) {
+    $csc = "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe"
+}
+
+if (!(Test-Path $csc)) {
+    Write-Host "[HATA] .NET Framework derleyicisi (csc.exe) bulunamadi!" -ForegroundColor Red
+    Add-Content -Path $logFile -Value "Error: csc.exe not found"
+    exit 1
+}
+
+& $csc /target:winexe /out:"$dir\\CoreRemoteAgent.exe" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll "$dir\\Agent.cs"
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[HATA] Derleme sirasinda hata olustu!" -ForegroundColor Red
+    Add-Content -Path $logFile -Value "Error: Compilation failed"
+    exit 1
+}
+
+# 5. Start Agent
+Write-Host ">> Ajan baslatiliyor..." -ForegroundColor Gray
+Start-Process -FilePath "$dir\\CoreRemoteAgent.exe" -WorkingDirectory $dir
+
+Write-Host "=> Kurulum ve Derleme Basariyla Tamamlandi!" -ForegroundColor Green
+Add-Content -Path $logFile -Value "Installation completed successfully"
+`;
+
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(psScript);
+  } catch (err) {
+    console.error("Builder installation generation error:", err);
+    res.status(500).send("Error generating installer: " + err.message);
+  }
+});
+
+// Sunucuyu Başlat
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`\n🚀 CoreRemote Sunucusu hazır -> http://localhost:${PORT}\n`);
+});

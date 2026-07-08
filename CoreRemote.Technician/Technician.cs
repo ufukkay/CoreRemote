@@ -26,10 +26,8 @@ namespace CoreRemote.Technician
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // Register registry custom URL protocol scheme coreremote://
             RegisterCustomProtocol();
 
-            // Check if launched via deep-link
             if (args.Length > 0 && args[0].StartsWith("coreremote://", StringComparison.OrdinalIgnoreCase))
             {
                 string rawUrl = args[0];
@@ -41,7 +39,6 @@ namespace CoreRemote.Technician
                 }
             }
 
-            // Default fallback
             Application.Run(new MainForm());
         }
 
@@ -95,32 +92,35 @@ namespace CoreRemote.Technician
         public MainForm()
         {
             this.Text = "CoreRemote Teknisyen Portalı";
-            this.Size = new Size(850, 520);
+            this.Size = new Size(900, 550);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(13, 17, 23);
             this.ForeColor = Color.FromArgb(201, 209, 217);
 
-            Panel header = new Panel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(10) };
+            Panel header = new Panel { Dock = DockStyle.Top, Height = 60, Padding = new Padding(15, 10, 15, 10), BackColor = Color.FromArgb(22, 27, 34) };
             Label title = new Label 
             { 
-                Text = "Kayıtlı Uzak Bilgisayarlar", 
+                Text = "⚡ CoreRemote - Uzak Yönetim Paneli", 
                 Font = new Font("Segoe UI", 12, FontStyle.Bold), 
                 ForeColor = Color.FromArgb(88, 166, 255),
                 Dock = DockStyle.Left,
-                Width = 300
+                Width = 400,
+                TextAlign = ContentAlignment.MiddleLeft
             };
             
             _refreshBtn = new Button
             {
                 Text = "Listeyi Yenile",
                 Dock = DockStyle.Right,
-                Width = 110,
+                Width = 120,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(33, 38, 45),
                 ForeColor = Color.FromArgb(201, 209, 217),
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
             _refreshBtn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
+            _refreshBtn.FlatAppearance.BorderSize = 1;
             _refreshBtn.Click += (s, e) => LoadDevicesAsync();
 
             header.Controls.Add(title);
@@ -129,9 +129,9 @@ namespace CoreRemote.Technician
             _grid = new DataGridView
             {
                 Dock = DockStyle.Fill,
-                BackgroundColor = Color.FromArgb(22, 27, 34),
+                BackgroundColor = Color.FromArgb(13, 17, 23),
                 ForeColor = Color.FromArgb(201, 209, 217),
-                GridColor = Color.FromArgb(48, 54, 61),
+                GridColor = Color.FromArgb(30, 35, 41),
                 BorderStyle = BorderStyle.None,
                 ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single,
                 RowHeadersVisible = false,
@@ -140,15 +140,18 @@ namespace CoreRemote.Technician
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = false,
                 ReadOnly = true,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                RowTemplate = { Height = 35 }
             };
-            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(33, 38, 45);
+            _grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(22, 27, 34);
             _grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(201, 209, 217);
             _grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            _grid.ColumnHeadersHeight = 35;
             _grid.DefaultCellStyle.BackColor = Color.FromArgb(13, 17, 23);
             _grid.DefaultCellStyle.ForeColor = Color.FromArgb(201, 209, 217);
-            _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(56, 139, 253);
+            _grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(31, 111, 235);
             _grid.DefaultCellStyle.SelectionForeColor = Color.White;
+            _grid.DefaultCellStyle.Font = new Font("Segoe UI", 9);
             _grid.EnableHeadersVisualStyles = false;
 
             _grid.Columns.Add("Id", "Cihaz ID");
@@ -215,13 +218,13 @@ namespace CoreRemote.Technician
                         int idx = _grid.Rows.Add(id, hostname, username, ip, version, displayStatus);
                         if (displayStatus == "Online")
                         {
-                            _grid.Rows[idx].Cells["Status"].Style.ForeColor = Color.LightGreen;
-                            _grid.Rows[idx].Cells["Status"].Style.SelectionForeColor = Color.LightGreen;
+                            _grid.Rows[idx].Cells["Status"].Style.ForeColor = Color.FromArgb(86, 211, 100);
+                            _grid.Rows[idx].Cells["Status"].Style.SelectionForeColor = Color.FromArgb(86, 211, 100);
                         }
                         else
                         {
-                            _grid.Rows[idx].Cells["Status"].Style.ForeColor = Color.LightCoral;
-                            _grid.Rows[idx].Cells["Status"].Style.SelectionForeColor = Color.LightCoral;
+                            _grid.Rows[idx].Cells["Status"].Style.ForeColor = Color.FromArgb(248, 81, 73);
+                            _grid.Rows[idx].Cells["Status"].Style.SelectionForeColor = Color.FromArgb(248, 81, 73);
                         }
                     }
                 }
@@ -299,19 +302,26 @@ namespace CoreRemote.Technician
         }
     }
 
-    // ── MULTI-TAB REMOTE CONTROL VIEWER ──────────────────────────────────────
+    // ── PREMIUM TABBED REMOTE VIEWER ─────────────────────────────────────────
     public class ViewerForm : Form
     {
         private string _deviceId;
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
 
-        // UI Tabs & Views
+        // UI Components
+        private Panel _sidebar;
         private TabControl _tabControl;
         
+        // Navigation Buttons
+        private Button[] _navButtons;
+        private int _activeTabIndex = 0;
+
         // Tab 1: Screen View
         private PictureBox _screenBox;
+        private Panel _screenScrollPanel;
         private ComboBox _monitorSelect;
+        private ComboBox _viewModeSelect;
         private Button _blockInputBtn;
         private Button _blankScreenBtn;
         private Button _elevateUacBtn;
@@ -320,16 +330,16 @@ namespace CoreRemote.Technician
         private bool _isInputBlocked = false;
         private bool _isScreenBlanked = false;
 
-        // Tab 2: Remote Terminal
-        private TextBox _terminalHistory;
-        private TextBox _terminalInput;
-
-        // Tab 3: File Explorer
+        // Tab 2: File Explorer
         private ListBox _fileList;
         private TextBox _currentPathText;
         private Button _fileUpBtn;
         private Button _fileDownBtn;
         private Button _folderBackBtn;
+
+        // Tab 3: Remote Terminal
+        private TextBox _terminalHistory;
+        private TextBox _terminalInput;
 
         // Tab 4: Process Manager
         private DataGridView _procGrid;
@@ -346,129 +356,274 @@ namespace CoreRemote.Technician
         public ViewerForm(string deviceId)
         {
             _deviceId = deviceId;
-            this.Text = "CoreRemote Uzak Yönetim Paneli - " + deviceId;
-            this.Size = new Size(1100, 800);
+            this.Text = "CoreRemote Canlı Kontrol Paneli - Cihaz: " + deviceId;
+            this.Size = new Size(1200, 850);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(13, 17, 23);
             this.ForeColor = Color.FromArgb(201, 209, 217);
 
-            // TabControl Layout Setup
-            _tabControl = new TabControl { Dock = DockStyle.Fill };
-            
-            SetupScreenTab();
-            SetupFileTab();
-            SetupTerminalTab();
-            SetupProcessTab();
-            SetupChatTab();
-
-            this.Controls.Add(_tabControl);
+            InitializeLayout();
 
             this.Load += async (s, e) => await ConnectAsync();
             this.FormClosing += (s, e) => Disconnect();
         }
 
+        private void InitializeLayout()
+        {
+            // Left Sidebar Setup
+            _sidebar = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 220,
+                BackColor = Color.FromArgb(22, 27, 34),
+                Padding = new Padding(0, 10, 0, 10)
+            };
+
+            Label logo = new Label
+            {
+                Text = "⚡ CoreRemote",
+                Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                ForeColor = Color.FromArgb(88, 166, 255),
+                Dock = DockStyle.Top,
+                Height = 50,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            _sidebar.Controls.Add(logo);
+
+            // Navigation buttons creation
+            string[] tabNames = { "🖥️ Canlı Ekran", "📁 Dosya Gezgini", "⚙️ Görev Yöneticisi", "💻 Uzak Konsol", "💬 Sohbet" };
+            _navButtons = new Button[tabNames.Length];
+            
+            Panel navContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 20, 0, 0) };
+            _sidebar.Controls.Add(navContainer);
+            _sidebar.Controls.SetChildIndex(navContainer, 0); // Put under logo
+
+            for (int i = tabNames.Length - 1; i >= 0; i--)
+            {
+                int index = i;
+                Button btn = new Button
+                {
+                    Text = "   " + tabNames[i],
+                    Dock = DockStyle.Top,
+                    Height = 50,
+                    FlatStyle = FlatStyle.Flat,
+                    ForeColor = Color.FromArgb(201, 209, 217),
+                    BackColor = Color.Transparent,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                    Cursor = Cursors.Hand
+                };
+                btn.FlatAppearance.BorderSize = 0;
+                btn.Click += (s, e) => SwitchTab(index);
+
+                // Hover styling hooks
+                btn.MouseEnter += (s, e) => {
+                    if (_activeTabIndex != index) btn.BackColor = Color.FromArgb(33, 38, 45);
+                };
+                btn.MouseLeave += (s, e) => {
+                    if (_activeTabIndex != index) btn.BackColor = Color.Transparent;
+                };
+
+                _navButtons[i] = btn;
+                navContainer.Controls.Add(btn);
+            }
+
+            this.Controls.Add(_sidebar);
+
+            // TabControl (We hide standard headers for custom look)
+            _tabControl = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Appearance = TabAppearance.Buttons,
+                ItemSize = new Size(0, 1),
+                SizeMode = TabSizeMode.Fixed
+            };
+
+            SetupScreenTab();
+            SetupFileTab();
+            SetupProcessTab();
+            SetupTerminalTab();
+            SetupChatTab();
+
+            this.Controls.Add(_tabControl);
+            _tabControl.BringToFront();
+
+            // Set default view active button color
+            SwitchTab(0);
+        }
+
+        private void SwitchTab(int index)
+        {
+            _activeTabIndex = index;
+            _tabControl.SelectedIndex = index;
+
+            for (int i = 0; i < _navButtons.Length; i++)
+            {
+                if (i == index)
+                {
+                    _navButtons[i].BackColor = Color.FromArgb(31, 111, 235);
+                    _navButtons[i].ForeColor = Color.White;
+                }
+                else
+                {
+                    _navButtons[i].BackColor = Color.Transparent;
+                    _navButtons[i].ForeColor = Color.FromArgb(201, 209, 217);
+                }
+            }
+        }
+
         private void SetupScreenTab()
         {
-            TabPage tab = new TabPage("Uzak Masaüstü");
+            TabPage tab = new TabPage("Masaüstü");
             tab.BackColor = Color.Black;
 
-            Panel toolbar = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.FromArgb(22, 27, 34) };
+            // Custom Styled Toolbar Header
+            Panel toolbar = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Color.FromArgb(22, 27, 34), Padding = new Padding(10, 5, 10, 5) };
             
-            Label monLbl = new Label { Text = "Monitör:", Width = 50, Location = new Point(10, 12), ForeColor = Color.White };
-            _monitorSelect = new ComboBox { Location = new Point(65, 8), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
-            _monitorSelect.Items.Add("Ekran 1 (Ana)");
+            // Monitor Selector Dropdown
+            Label monLbl = new Label { Text = "Ekran:", Width = 45, Location = new Point(10, 15), ForeColor = Color.White, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _monitorSelect = new ComboBox { Location = new Point(58, 12), Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            _monitorSelect.Items.Add("Ekran 1");
             _monitorSelect.SelectedIndex = 0;
             _monitorSelect.SelectedIndexChanged += (s, e) => {
                 SendControlCommand("select_monitor", "\"index\":" + _monitorSelect.SelectedIndex);
             };
 
-            _blockInputBtn = new Button 
-            { 
-                Text = "Giriş Kilitle", 
-                Location = new Point(230, 6), 
-                Width = 100, 
-                BackColor = Color.FromArgb(33, 38, 45), 
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat 
-            };
-            _blockInputBtn.Click += (s, e) => {
+            // View Scaling Mode Selector Dropdown (stretch, zoom, original size scroll)
+            Label scaleLbl = new Label { Text = "Ölçek:", Width = 45, Location = new Point(180, 15), ForeColor = Color.White, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _viewModeSelect = new ComboBox { Location = new Point(228, 12), Width = 150, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            _viewModeSelect.Items.Add("Ekrana Sığdır (Fit)");
+            _viewModeSelect.Items.Add("Genişlet (Stretch)");
+            _viewModeSelect.Items.Add("Gerçek Boyut (Scroll)");
+            _viewModeSelect.SelectedIndex = 0;
+            _viewModeSelect.SelectedIndexChanged += (s, e) => UpdateViewerResolutionMode();
+
+            // Action Control Buttons
+            _blockInputBtn = CreateToolbarButton("Giriş Kilitle", 395, () => {
                 _isInputBlocked = !_isInputBlocked;
                 SendControlCommand("block_input", "\"block\":" + (_isInputBlocked ? "true" : "false"));
-                _blockInputBtn.BackColor = _isInputBlocked ? Color.DarkRed : Color.FromArgb(33, 38, 45);
-            };
+                _blockInputBtn.BackColor = _isInputBlocked ? Color.FromArgb(248, 81, 73) : Color.FromArgb(33, 38, 45);
+            });
 
-            _blankScreenBtn = new Button 
-            { 
-                Text = "Ekranı Karart", 
-                Location = new Point(340, 6), 
-                Width = 100, 
-                BackColor = Color.FromArgb(33, 38, 45), 
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat 
-            };
-            _blankScreenBtn.Click += (s, e) => {
+            _blankScreenBtn = CreateToolbarButton("Ekranı Karart", 500, () => {
                 _isScreenBlanked = !_isScreenBlanked;
                 SendControlCommand("blank_screen", "\"blank\":" + (_isScreenBlanked ? "true" : "false"));
-                _blankScreenBtn.BackColor = _isScreenBlanked ? Color.DarkSlateGray : Color.FromArgb(33, 38, 45);
-            };
+                _blankScreenBtn.BackColor = _isScreenBlanked ? Color.FromArgb(248, 81, 73) : Color.FromArgb(33, 38, 45);
+            });
 
-            _audioBtn = new Button 
-            { 
-                Text = "Sesi Aç", 
-                Location = new Point(450, 6), 
-                Width = 80, 
-                BackColor = Color.FromArgb(33, 38, 45), 
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat 
-            };
-            _audioBtn.Click += (s, e) => {
+            _audioBtn = CreateToolbarButton("Sesi Aç", 605, () => {
                 _isAudioMuted = !_isAudioMuted;
                 SendControlCommand("audio_stream", "\"enable\":" + (!_isAudioMuted ? "true" : "false"));
                 _audioBtn.Text = _isAudioMuted ? "Sesi Aç" : "Sesi Kapat";
-                _audioBtn.BackColor = !_isAudioMuted ? Color.DarkGreen : Color.FromArgb(33, 38, 45);
-            };
+                _audioBtn.BackColor = !_isAudioMuted ? Color.FromArgb(86, 211, 100) : Color.FromArgb(33, 38, 45);
+            });
 
             _elevateUacBtn = new Button 
             { 
                 Text = "Yönetici Yetkisi İste (UAC)", 
-                Location = new Point(540, 6), 
-                Width = 160, 
-                BackColor = Color.FromArgb(23, 108, 232), 
+                Location = new Point(710, 10), 
+                Width = 170, 
+                Height = 30,
+                BackColor = Color.FromArgb(31, 111, 235), 
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat 
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
+            _elevateUacBtn.FlatAppearance.BorderSize = 0;
             _elevateUacBtn.Click += (s, e) => SendControlCommand("elevate_uac", "");
 
             toolbar.Controls.Add(monLbl);
             toolbar.Controls.Add(_monitorSelect);
+            toolbar.Controls.Add(scaleLbl);
+            toolbar.Controls.Add(_viewModeSelect);
             toolbar.Controls.Add(_blockInputBtn);
             toolbar.Controls.Add(_blankScreenBtn);
             toolbar.Controls.Add(_audioBtn);
             toolbar.Controls.Add(_elevateUacBtn);
 
-            _screenBox = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+            // Container ScrollPanel wrapping PictureBox screen viewer
+            _screenScrollPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Black,
+                AutoScroll = true
+            };
+
+            _screenBox = new PictureBox
+            {
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.Black
+            };
             
-            // Scaled PictureBox client events
             _screenBox.MouseMove += ScreenBox_MouseMove;
             _screenBox.MouseDown += ScreenBox_MouseDown;
             _screenBox.MouseUp += ScreenBox_MouseUp;
-            _screenBox.MouseWheel += ScreenBox_MouseWheel;
             _screenBox.Focus();
 
-            tab.Controls.Add(_screenBox);
+            _screenScrollPanel.Controls.Add(_screenBox);
+
+            tab.Controls.Add(_screenScrollPanel);
             tab.Controls.Add(toolbar);
             _tabControl.TabPages.Add(tab);
         }
 
+        private Button CreateToolbarButton(string text, int x, Action onClick)
+        {
+            Button btn = new Button
+            {
+                Text = text,
+                Location = new Point(x, 10),
+                Width = 100,
+                Height = 30,
+                BackColor = Color.FromArgb(33, 38, 45),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
+            btn.Click += (s, e) => onClick();
+            return btn;
+        }
+
+        private void UpdateViewerResolutionMode()
+        {
+            if (_viewModeSelect.SelectedIndex == 0)
+            {
+                // Zoom / Fit mode
+                _screenBox.Dock = DockStyle.Fill;
+                _screenBox.SizeMode = PictureBoxSizeMode.Zoom;
+            }
+            else if (_viewModeSelect.SelectedIndex == 1)
+            {
+                // Stretch mode
+                _screenBox.Dock = DockStyle.Fill;
+                _screenBox.SizeMode = PictureBoxSizeMode.StretchImage;
+            }
+            else
+            {
+                // Scroll / Original Size mode
+                _screenBox.Dock = DockStyle.None;
+                _screenBox.SizeMode = PictureBoxSizeMode.Normal;
+                if (_screenBox.Image != null)
+                {
+                    _screenBox.Size = _screenBox.Image.Size;
+                }
+            }
+        }
+
         private void SetupFileTab()
         {
-            TabPage tab = new TabPage("Dosya Transferi");
-            tab.BackColor = Color.FromArgb(22, 27, 34);
+            TabPage tab = new TabPage("Dosyalar");
+            tab.BackColor = Color.FromArgb(13, 17, 23);
 
-            Panel navPanel = new Panel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(5) };
-            _currentPathText = new TextBox { Location = new Point(10, 8), Width = 500, Text = @"C:\", BackColor = Color.FromArgb(13, 17, 23), ForeColor = Color.White };
+            Panel navPanel = new Panel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(10), BackColor = Color.FromArgb(22, 27, 34) };
+            _currentPathText = new TextBox { Location = new Point(10, 12), Width = 550, Text = @"C:\", BackColor = Color.FromArgb(13, 17, 23), ForeColor = Color.White, Font = new Font("Segoe UI", 9), BorderStyle = BorderStyle.FixedSingle };
             
-            _folderBackBtn = new Button { Text = "Geri", Location = new Point(520, 6), Width = 60, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            _folderBackBtn = new Button { Text = "Geri", Location = new Point(570, 10), Width = 60, Height = 28, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _folderBackBtn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
             _folderBackBtn.Click += (s, e) => {
                 string current = _currentPathText.Text;
                 var parent = Directory.GetParent(current.EndsWith("\\") ? current.Substring(0, current.Length - 1) : current);
@@ -479,10 +634,12 @@ namespace CoreRemote.Technician
                 }
             };
 
-            _fileUpBtn = new Button { Text = "Yükle (Upload)", Location = new Point(590, 6), Width = 110, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            _fileUpBtn = new Button { Text = "Yükle (Upload)", Location = new Point(640, 10), Width = 110, Height = 28, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _fileUpBtn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
             _fileUpBtn.Click += (s, e) => UploadFile();
 
-            _fileDownBtn = new Button { Text = "İndir (Download)", Location = new Point(710, 6), Width = 120, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            _fileDownBtn = new Button { Text = "İndir (Download)", Location = new Point(760, 10), Width = 120, Height = 28, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _fileDownBtn.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
             _fileDownBtn.Click += (s, e) => {
                 if (_fileList.SelectedItem != null)
                 {
@@ -508,7 +665,8 @@ namespace CoreRemote.Technician
                 BackColor = Color.FromArgb(13, 17, 23), 
                 ForeColor = Color.White, 
                 Font = new Font("Consolas", 10),
-                BorderStyle = BorderStyle.None
+                BorderStyle = BorderStyle.None,
+                ItemHeight = 25
             };
             _fileList.DoubleClick += (s, e) => {
                 if (_fileList.SelectedItem != null)
@@ -525,6 +683,54 @@ namespace CoreRemote.Technician
 
             tab.Controls.Add(_fileList);
             tab.Controls.Add(navPanel);
+            _tabControl.TabPages.Add(tab);
+        }
+
+        private void SetupProcessTab()
+        {
+            TabPage tab = new TabPage("Süreçler");
+            tab.BackColor = Color.FromArgb(13, 17, 23);
+
+            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(10), BackColor = Color.FromArgb(22, 27, 34) };
+            Button refreshProc = new Button { Text = "Süreçleri Yenile", Location = new Point(10, 10), Width = 130, Height = 30, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            refreshProc.FlatAppearance.BorderColor = Color.FromArgb(48, 54, 61);
+            refreshProc.Click += (s, e) => SendControlCommand("list_processes", "");
+            
+            _killProcBtn = new Button { Text = "Görevi Sonlandır", Location = new Point(150, 10), Width = 130, Height = 30, BackColor = Color.FromArgb(248, 81, 73), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            _killProcBtn.FlatAppearance.BorderSize = 0;
+            _killProcBtn.Click += (s, e) => KillSelectedProcess();
+
+            topPanel.Controls.Add(refreshProc);
+            topPanel.Controls.Add(_killProcBtn);
+
+            _procGrid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                BackgroundColor = Color.FromArgb(13, 17, 23),
+                ForeColor = Color.White,
+                GridColor = Color.FromArgb(30, 35, 41),
+                RowHeadersVisible = false,
+                AllowUserToAddRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                ReadOnly = true,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BorderStyle = BorderStyle.None,
+                RowTemplate = { Height = 30 }
+            };
+            _procGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(22, 27, 34);
+            _procGrid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+            _procGrid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+            _procGrid.ColumnHeadersHeight = 30;
+            _procGrid.DefaultCellStyle.BackColor = Color.FromArgb(13, 17, 23);
+            _procGrid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(31, 111, 235);
+            _procGrid.EnableHeadersVisualStyles = false;
+
+            _procGrid.Columns.Add("Id", "Process ID");
+            _procGrid.Columns.Add("Name", "Uygulama Adı");
+            _procGrid.Columns.Add("Memory", "Bellek (MB)");
+
+            tab.Controls.Add(_procGrid);
+            tab.Controls.Add(topPanel);
             _tabControl.TabPages.Add(tab);
         }
 
@@ -551,7 +757,8 @@ namespace CoreRemote.Technician
                 BackColor = Color.FromArgb(22, 27, 34),
                 ForeColor = Color.White,
                 Font = new Font("Consolas", 10),
-                BorderStyle = BorderStyle.FixedSingle
+                BorderStyle = BorderStyle.FixedSingle,
+                Height = 30
             };
             _terminalInput.KeyDown += (s, e) => {
                 if (e.KeyCode == Keys.Enter)
@@ -567,46 +774,6 @@ namespace CoreRemote.Technician
             _tabControl.TabPages.Add(tab);
         }
 
-        private void SetupProcessTab()
-        {
-            TabPage tab = new TabPage("Görev Yöneticisi");
-            tab.BackColor = Color.FromArgb(22, 27, 34);
-
-            Panel topPanel = new Panel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(5) };
-            Button refreshProc = new Button { Text = "Süreçleri Yenile", Location = new Point(10, 6), Width = 120, BackColor = Color.FromArgb(33, 38, 45), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            refreshProc.Click += (s, e) => SendControlCommand("list_processes", "");
-            
-            _killProcBtn = new Button { Text = "Görevi Sonlandır", Location = new Point(140, 6), Width = 130, BackColor = Color.DarkRed, ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            _killProcBtn.Click += (s, e) => KillSelectedProcess();
-
-            topPanel.Controls.Add(refreshProc);
-            topPanel.Controls.Add(_killProcBtn);
-
-            _procGrid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                BackgroundColor = Color.FromArgb(13, 17, 23),
-                ForeColor = Color.White,
-                GridColor = Color.FromArgb(48, 54, 61),
-                RowHeadersVisible = false,
-                AllowUserToAddRows = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                ReadOnly = true,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
-            };
-            _procGrid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(33, 38, 45);
-            _procGrid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
-            _procGrid.EnableHeadersVisualStyles = false;
-
-            _procGrid.Columns.Add("Id", "Process ID");
-            _procGrid.Columns.Add("Name", "Uygulama Adı");
-            _procGrid.Columns.Add("Memory", "Bellek (MB)");
-
-            tab.Controls.Add(_procGrid);
-            tab.Controls.Add(topPanel);
-            _tabControl.TabPages.Add(tab);
-        }
-
         private void SetupChatTab()
         {
             TabPage tab = new TabPage("Sohbet (Chat)");
@@ -614,24 +781,25 @@ namespace CoreRemote.Technician
 
             _chatHistory = new TextBox
             {
-                Location = new Point(10, 10),
-                Size = new Size(500, 400),
+                Location = new Point(20, 20),
+                Size = new Size(700, 500),
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 BackColor = Color.FromArgb(22, 27, 34),
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9),
+                Font = new Font("Segoe UI", 10),
                 BorderStyle = BorderStyle.None
             };
 
             _chatInput = new TextBox
             {
-                Location = new Point(10, 425),
-                Size = new Size(400, 30),
+                Location = new Point(20, 545),
+                Size = new Size(580, 40),
                 BackColor = Color.FromArgb(22, 27, 34),
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9)
+                Font = new Font("Segoe UI", 10),
+                BorderStyle = BorderStyle.FixedSingle
             };
             _chatInput.KeyDown += (s, e) => {
                 if (e.KeyCode == Keys.Enter) { SendChatMessage(); e.SuppressKeyPress = true; }
@@ -640,12 +808,15 @@ namespace CoreRemote.Technician
             Button sendBtn = new Button
             {
                 Text = "Gönder",
-                Location = new Point(420, 424),
-                Size = new Size(90, 25),
-                BackColor = Color.FromArgb(33, 38, 45),
+                Location = new Point(610, 544),
+                Size = new Size(110, 30),
+                BackColor = Color.FromArgb(31, 111, 235),
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
+            sendBtn.FlatAppearance.BorderSize = 0;
             sendBtn.Click += (s, e) => SendChatMessage();
 
             tab.Controls.Add(_chatHistory);
@@ -666,14 +837,11 @@ namespace CoreRemote.Technician
                 string url = Program.ServerWsUrl + "/operator-socket?deviceId=" + Uri.EscapeDataString(_deviceId);
                 await _ws.ConnectAsync(new Uri(url), _cts.Token);
 
-                // Start inbound packet loop
                 Task.Run(async () => await ReceiveLoopAsync());
 
-                // Trigger process list load & directory explorer on start
                 SendControlCommand("list_processes", "");
                 RequestFileList();
 
-                // Start local clipboard observer thread
                 Thread clipboardThread = new Thread(ClipboardWatchLoop);
                 clipboardThread.SetApartmentState(ApartmentState.STA);
                 clipboardThread.Start();
@@ -687,7 +855,7 @@ namespace CoreRemote.Technician
 
         private async Task ReceiveLoopAsync()
         {
-            byte[] buffer = new byte[1024 * 1024]; // 1MB buffer
+            byte[] buffer = new byte[1024 * 1024];
             MemoryStream ms = new MemoryStream();
 
             try
@@ -729,7 +897,6 @@ namespace CoreRemote.Technician
 
             if (packetType == 0x01)
             {
-                // Canlı Ekran Karesi (JPEG)
                 byte[] jpegData = new byte[packet.Length - 1];
                 Buffer.BlockCopy(packet, 1, jpegData, 0, jpegData.Length);
                 using (MemoryStream stream = new MemoryStream(jpegData))
@@ -739,19 +906,23 @@ namespace CoreRemote.Technician
                         Image old = _screenBox.Image;
                         _screenBox.Image = img;
                         if (old != null) old.Dispose();
+
+                        // Auto-scroll mode sizing update if selected
+                        if (_viewModeSelect.SelectedIndex == 2)
+                        {
+                            _screenBox.Size = img.Size;
+                        }
                     });
                 }
             }
             else if (packetType == 0x02)
             {
-                // Canlı Hoparlör Sesi (PCM)
                 if (_isAudioMuted) return;
                 byte[] pcmData = new byte[packet.Length - 1];
                 Buffer.BlockCopy(packet, 1, pcmData, 0, pcmData.Length);
 
                 if (_audioPlayer == null)
                 {
-                    // Core Audio mix default: 44100Hz, stereo, 16bit
                     _audioPlayer = new WavePlayer(44100, 2, 16);
                 }
                 _audioPlayer.Play(pcmData);
@@ -846,7 +1017,6 @@ namespace CoreRemote.Technician
                 }
                 else if (type == "telemetry")
                 {
-                    // Process multi-monitor list update
                     string telemetryData = GetJsonValue(json, "data");
                     string monitors = GetJsonValue(telemetryData, "monitors");
                     if (!string.IsNullOrEmpty(monitors))
@@ -870,38 +1040,53 @@ namespace CoreRemote.Technician
             }
         }
 
-        // ── CONTROL INPUT COORDINATES TRANSLATING ───────────────────────────
+        // ── COORDINATE TRANSLATING ON ZOOM/STRETCH/NORMAL MODES ─────────────
 
         private Point TranslateCoordinates(Point p)
         {
             if (_screenBox.Image == null) return p;
 
-            int w_i = _screenBox.Image.Width;
-            int h_i = _screenBox.Image.Height;
-            int w_c = _screenBox.Width;
-            int h_c = _screenBox.Height;
+            if (_screenBox.SizeMode == PictureBoxSizeMode.StretchImage)
+            {
+                double rx = (double)p.X / _screenBox.Width;
+                double ry = (double)p.Y / _screenBox.Height;
+                return new Point((int)(rx * 65535), (int)(ry * 65535));
+            }
+            else if (_screenBox.SizeMode == PictureBoxSizeMode.Normal)
+            {
+                // Normal mode: 1:1 original resolution with scrollbars
+                double rx = (double)p.X / _screenBox.Width;
+                double ry = (double)p.Y / _screenBox.Height;
+                return new Point((int)(rx * 65535), (int)(ry * 65535));
+            }
+            else // Zoom mode (Fit)
+            {
+                int w_i = _screenBox.Image.Width;
+                int h_i = _screenBox.Image.Height;
+                int w_c = _screenBox.Width;
+                int h_c = _screenBox.Height;
 
-            double ratioX = (double)w_c / w_i;
-            double ratioY = (double)h_c / h_i;
-            double ratio = Math.Min(ratioX, ratioY);
+                double ratioX = (double)w_c / w_i;
+                double ratioY = (double)h_c / h_i;
+                double ratio = Math.Min(ratioX, ratioY);
 
-            int imgWidth = (int)(w_i * ratio);
-            int imgHeight = (int)(h_i * ratio);
+                int imgWidth = (int)(w_i * ratio);
+                int imgHeight = (int)(h_i * ratio);
 
-            int imgX = (w_c - imgWidth) / 2;
-            int imgY = (h_c - imgHeight) / 2;
+                int imgX = (w_c - imgWidth) / 2;
+                int imgY = (h_c - imgHeight) / 2;
 
-            int relativeX = p.X - imgX;
-            int relativeY = p.Y - imgY;
+                int relativeX = p.X - imgX;
+                int relativeY = p.Y - imgY;
 
-            // Clamp coordinate bounds inside PictureBox image frame boundaries
-            relativeX = Math.Max(0, Math.Min(imgWidth, relativeX));
-            relativeY = Math.Max(0, Math.Min(imgHeight, relativeY));
+                relativeX = Math.Max(0, Math.Min(imgWidth, relativeX));
+                relativeY = Math.Max(0, Math.Min(imgHeight, relativeY));
 
-            double rx = (double)relativeX / imgWidth;
-            double ry = (double)relativeY / imgHeight;
+                double rx = (double)relativeX / imgWidth;
+                double ry = (double)relativeY / imgHeight;
 
-            return new Point((int)(rx * 65535), (int)(ry * 65535));
+                return new Point((int)(rx * 65535), (int)(ry * 65535));
+            }
         }
 
         private void ScreenBox_MouseMove(object sender, MouseEventArgs e)
@@ -933,16 +1118,10 @@ namespace CoreRemote.Technician
             SendInputSignal(json);
         }
 
-        private void ScreenBox_MouseWheel(object sender, MouseEventArgs e)
-        {
-            // Optional wheel handling
-        }
-
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (_tabControl.SelectedTab.Text == "Uzak Masaüstü")
+            if (_tabControl.SelectedTab.Text == "Masaüstü")
             {
-                // KeyDown
                 int vk = (int)(keyData & Keys.KeyCode);
                 SendInputSignal("{\"action\":\"keydown\",\"vk\":" + vk + "}");
                 return true;
@@ -952,7 +1131,7 @@ namespace CoreRemote.Technician
 
         protected override void OnKeyUp(KeyEventArgs e)
         {
-            if (_tabControl.SelectedTab.Text == "Uzak Masaüstü")
+            if (_tabControl.SelectedTab.Text == "Masaüstü")
             {
                 int vk = (int)e.KeyCode;
                 SendInputSignal("{\"action\":\"keyup\",\"vk\":" + vk + "}");
@@ -1039,7 +1218,7 @@ namespace CoreRemote.Technician
                     }
 
                     MessageBox.Show("Dosya karşı bilgisayara başarıyla yüklendi!", "Yükleme Tamamlandı", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    RequestFileList(); // Refresh directory view
+                    RequestFileList();
                 }
             }
         }
@@ -1063,7 +1242,6 @@ namespace CoreRemote.Technician
             SendControlCommand("chat_msg", "\"text\":\"" + EscJ(txt) + "\"");
         }
 
-        // ── CLIPBOARD SYNCHRONIZATION ───────────────────────────────────────
         private void ClipboardWatchLoop()
         {
             while (_ws != null && _ws.State == WebSocketState.Open)
@@ -1231,7 +1409,7 @@ namespace CoreRemote.Technician
             {
                 WAVEFORMATEX format = new WAVEFORMATEX
                 {
-                    wFormatTag = 1, // WAVE_FORMAT_PCM
+                    wFormatTag = 1,
                     nChannels = channels,
                     nSamplesPerSec = samplesPerSec,
                     wBitsPerSample = bitsPerSample,
@@ -1263,7 +1441,6 @@ namespace CoreRemote.Technician
                 waveOutPrepareHeader(_hWaveOut, ref hdr, (uint)Marshal.SizeOf(hdr));
                 waveOutWrite(_hWaveOut, ref hdr, (uint)Marshal.SizeOf(hdr));
                 
-                // Asynchronously dispose play buffer after short play duration block
                 Task.Run(() => {
                     Thread.Sleep(600);
                     try

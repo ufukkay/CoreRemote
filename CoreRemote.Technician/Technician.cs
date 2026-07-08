@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -447,9 +448,9 @@ namespace CoreRemote.Technician
         private string _deviceId;
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
-        private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         private DateTime _lastMouseMoveTime = DateTime.MinValue;
-        private volatile bool _frameProcessing = false; // Drop frames while previous is still rendering
+        private volatile bool _frameProcessing = false;
+        private readonly ConcurrentQueue<byte[]> _sendQueue = new ConcurrentQueue<byte[]>();
 
         // UI Components
         private Panel _sidebar;
@@ -1007,8 +1008,9 @@ namespace CoreRemote.Technician
                 await _ws.ConnectAsync(new Uri(url), _cts.Token);
 
                 Task.Run(async () => await ReceiveLoopAsync());
+                Task.Run(async () => await SendLoopAsync());
 
-                SendControlCommand("list_processes", "");
+                QueueControlCommand("list_processes", "");
                 RequestFileList();
 
                 Thread clipboardThread = new Thread(ClipboardWatchLoop);
@@ -1386,56 +1388,55 @@ namespace CoreRemote.Technician
 
         private void SendInputSignal(string jsonPayload)
         {
-            // CRITICAL: Must NOT use async void here. async void continuations run on the
-            // UI thread (WinForms SyncContext), competing with frame rendering → freeze.
-            // Dispatch entirely to thread pool instead.
             if (_ws == null || _ws.State != WebSocketState.Open) return;
-            byte[] bytes = Encoding.UTF8.GetBytes(jsonPayload);
-            Task.Run(async () => {
-                try { await SendWsAsync(bytes, WebSocketMessageType.Text); }
-                catch { }
-            });
+            _sendQueue.Enqueue(Encoding.UTF8.GetBytes(jsonPayload));
         }
 
-        private async void SendControlCommand(string action, string additionalJson)
+        private void QueueControlCommand(string action, string additionalJson)
+        {
+            string inner = "\"action\":\"" + action + "\"";
+            if (!string.IsNullOrEmpty(additionalJson)) inner += "," + additionalJson;
+            string payload = "{" +
+                "\"type\":\"webrtc_signal\"," +
+                "\"data\":{" + inner + "}" +
+            "}";
+            _sendQueue.Enqueue(Encoding.UTF8.GetBytes(payload));
+        }
+
+        private void SendControlCommand(string action, string additionalJson)
+        {
+            QueueControlCommand(action, additionalJson);
+        }
+
+        // Dedicated sender loop — ONLY this thread ever calls _ws.SendAsync
+        private async Task SendLoopAsync()
         {
             try
             {
-                string inner = "\"action\":\"" + action + "\"";
-                if (!string.IsNullOrEmpty(additionalJson)) inner += "," + additionalJson;
-
-                string payload = "{" +
-                    "\"type\":\"webrtc_signal\"," +
-                    "\"data\":{" + inner + "}" +
-                "}";
-
-                byte[] bytes = Encoding.UTF8.GetBytes(payload);
-                if (_ws != null && _ws.State == WebSocketState.Open)
+                while (!_cts.Token.IsCancellationRequested)
                 {
-                    await SendWsAsync(bytes, WebSocketMessageType.Text);
+                    byte[] data;
+                    if (_sendQueue.TryDequeue(out data))
+                    {
+                        try
+                        {
+                            if (_ws != null && _ws.State == WebSocketState.Open)
+                            {
+                                await _ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, _cts.Token);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("Technician Send Error: " + ex.Message);
+                        }
+                    }
+                    else
+                    {
+                        await Task.Delay(5); // Small wait when queue empty
+                    }
                 }
             }
             catch {}
-        }
-
-        private async Task SendWsAsync(byte[] data, WebSocketMessageType type)
-        {
-            try
-            {
-                await _sendLock.WaitAsync();
-                if (_ws != null && _ws.State == WebSocketState.Open)
-                {
-                    await _ws.SendAsync(new ArraySegment<byte>(data), type, true, _cts.Token);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Technician Send Error: " + ex.Message);
-            }
-            finally
-            {
-                _sendLock.Release();
-            }
         }
 
         private void RequestFileList()
@@ -1443,7 +1444,7 @@ namespace CoreRemote.Technician
             SendControlCommand("list_files", "\"path\":\"" + EscJ(_currentPathText.Text) + "\"");
         }
 
-        private async void UploadFile()
+        private void UploadFile()
         {
             using (OpenFileDialog ofd = new OpenFileDialog())
             {
@@ -1473,7 +1474,7 @@ namespace CoreRemote.Technician
                             byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
                             if (_ws != null && _ws.State == WebSocketState.Open)
                             {
-                                await SendWsAsync(payloadBytes, WebSocketMessageType.Text);
+                                _sendQueue.Enqueue(payloadBytes);
                             }
                             isFirst = false;
                         }

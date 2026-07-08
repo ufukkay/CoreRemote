@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -18,6 +19,12 @@ namespace CoreRemote.Agent
 {
     class Program
     {
+        private class SendMessageItem
+        {
+            public byte[] Data { get; set; }
+            public WebSocketMessageType Type { get; set; }
+        }
+
         // ── Configuration ──
         private static string ServerUrl = "ws://localhost:5000/agent-socket";
         private static string ApiUrl = "http://localhost:5000/api/update/check";
@@ -27,7 +34,7 @@ namespace CoreRemote.Agent
 
         private static ClientWebSocket _ws;
         private static CancellationTokenSource _cts;
-        private static readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+        private static readonly ConcurrentQueue<SendMessageItem> _sendQueue = new ConcurrentQueue<SendMessageItem>();
         private static bool _isStreaming = false;
         private static int _frameIntervalMs = 100; // ~10 FPS default
         private static double _jpegQuality = 60.0; // Compression quality
@@ -357,6 +364,13 @@ namespace CoreRemote.Agent
                     Console.WriteLine("Connecting to server...");
                     await _ws.ConnectAsync(new Uri(wsConnectUrl), _cts.Token);
                     Console.WriteLine("Connected successfully!");
+
+                    // Clear any leftover messages in queue
+                    SendMessageItem trash;
+                    while (_sendQueue.TryDequeue(out trash)) {}
+
+                    // Start send loop
+                    Task.Run(async () => await SendLoopAsync());
 
                     UpdateTrayStatus(true);
 
@@ -1108,24 +1122,43 @@ namespace CoreRemote.Agent
             catch {}
         }
 
-        private static async Task SendWsAsync(byte[] data, WebSocketMessageType type)
+        private static Task SendWsAsync(byte[] data, WebSocketMessageType type)
+        {
+            if (_ws != null && _ws.State == WebSocketState.Open)
+            {
+                _sendQueue.Enqueue(new SendMessageItem { Data = data, Type = type });
+            }
+            return Task.FromResult<object>(null);
+        }
+
+        private static async Task SendLoopAsync()
         {
             try
             {
-                await _sendLock.WaitAsync();
-                if (_ws != null && _ws.State == WebSocketState.Open)
+                while (!_cts.Token.IsCancellationRequested)
                 {
-                    await _ws.SendAsync(new ArraySegment<byte>(data), type, true, _cts.Token);
+                    SendMessageItem item;
+                    if (_sendQueue.TryDequeue(out item))
+                    {
+                        try
+                        {
+                            if (_ws != null && _ws.State == WebSocketState.Open)
+                            {
+                                await _ws.SendAsync(new ArraySegment<byte>(item.Data), item.Type, true, _cts.Token);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("WebSocket Send Error: " + ex.Message);
+                        }
+                    }
+                    else
+                    {
+                        await Task.Delay(5); // Wait 5ms when queue is empty
+                    }
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine("WebSocket Send Error: " + ex.Message);
-            }
-            finally
-            {
-                _sendLock.Release();
-            }
+            catch {}
         }
 
         private static void ProcessControlSignal(string signalJson)

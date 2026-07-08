@@ -673,24 +673,41 @@ app.get("/api/technician/version", (req, res) => {
 
 // Sunucuyu kendi kendine güncelleyen (git pull + deploy-iis.ps1) API
 app.all("/api/admin/update-server", (req, res) => {
-  console.log("[SERVER UPDATE] Sunucu otomatik güncelleme tetiklendi!");
+  console.log("[SERVER UPDATE] Sunucu güncelleme denetimi tetiklendi...");
 
-  // Bağımsız (detached) PowerShell süreci başlat (çift tırnak kaçış hatasını önlemek için spawn kullanılır)
-  const pCmd = `Start-Process powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command "cd C:\\CoreRemote; git pull; .\\deploy-iis.ps1"' -WindowStyle Hidden`;
-  
-  try {
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", pCmd], {
-      detached: true,
-      stdio: "ignore"
-    });
-    child.unref();
+  const checkScript = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\CoreRemote\\check-update.ps1`;
 
-    console.log("[SERVER UPDATE] Güncelleme arka planda başarıyla başlatıldı.");
-    res.json({ success: true, message: "Sunucu güncelleme süreci başlatıldı. Servisler 15 saniye içinde yeniden yüklenecektir." });
-  } catch (err) {
-    console.error("[SERVER UPDATE ERR] Güncelleme başlatılamadı:", err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
+  exec(checkScript, (err, stdout, stderr) => {
+    if (err) {
+      console.error("[SERVER UPDATE ERR]", err.message);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+
+    const output = stdout.trim();
+    console.log("[SERVER UPDATE OUT]", output);
+
+    if (output.includes("ALREADY_UP_TO_DATE")) {
+      return res.json({ success: true, updated: false, message: "Sisteminiz zaten güncel. Yeni bir güncelleme bulunmuyor." });
+    } else if (output.includes("UPDATE_AVAILABLE")) {
+      // Güncelleme var -> Arka planda 1 saniye sonra git pull ve derleme tetikle (HTTP cevabının iletilmesine vakit kalması için)
+      const deployCmd = `Start-Process powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command "Start-Sleep -Seconds 1; cd C:\\CoreRemote; git pull origin main; .\\deploy-iis.ps1"' -WindowStyle Hidden`;
+      
+      try {
+        const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", deployCmd], {
+          detached: true,
+          stdio: "ignore"
+        });
+        child.unref();
+        
+        return res.json({ success: true, updated: true, message: "Yeni güncelleme algılandı! Güncellemeler arka planda kuruluyor, sayfa 15 saniye içinde yenilenecektir." });
+      } catch (spawnErr) {
+        console.error("[SERVER UPDATE DEPLOY ERR]", spawnErr.message);
+        return res.status(500).json({ success: false, error: "Güncelleme başlatılırken hata: " + spawnErr.message });
+      }
+    } else {
+      return res.status(500).json({ success: false, error: "Güncelleme kontrolü başarısız: " + output });
+    }
+  });
 });
 
 // Sunucuyu Başlat

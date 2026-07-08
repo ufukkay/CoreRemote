@@ -394,6 +394,7 @@ export default function Home() {
   };
 
   const executeServerUpdate = async () => {
+    setCheckingServerUpdate(true);
     setServerUpdateError(null);
     try {
       const res = await fetch(`${SERVER_HOST}/api/admin/update-server`, { method: "POST" });
@@ -401,12 +402,20 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(data.error || "Sunucu güncellemesi başlatılamadı.");
       }
+
+      if (data.updated === false) {
+        alert("✓ Sisteminiz zaten güncel! Herhangi bir yeni sürüm veya kod değişikliği bulunamadı.");
+        setCheckingServerUpdate(false);
+        return;
+      }
     } catch (err: any) {
       console.error(err);
-      setServerUpdateError(err.message || "Sunucuyla iletişim kurulurken bir hata oluştu.");
-      return; // Keep modal open and show error inside the modal UI
+      alert(err.message || "Güncelleme kontrolü sırasında bir hata oluştu.");
+      setCheckingServerUpdate(false);
+      return;
     }
 
+    setCheckingServerUpdate(false);
     // Success -> close modal and trigger countdown overlay
     setShowServerUpdateModal(false);
     setUpdatingServer(true);
@@ -915,10 +924,11 @@ export default function Home() {
                                 executeServerUpdate();
                               }
                             }}
-                            className="w-full bg-[#1f6feb] hover:bg-[#388bfd] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5"
+                            disabled={checkingServerUpdate}
+                            className="w-full bg-[#1f6feb] hover:bg-[#388bfd] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            <RefreshCw size={14} />
-                            Sunucuyu Güncelle (Git Pull & Deploy)
+                            <RefreshCw size={14} className={checkingServerUpdate ? "animate-spin" : ""} />
+                            {checkingServerUpdate ? "Denetleniyor / Güncelleniyor..." : "Sunucuyu Güncelle (Git Pull & Deploy)"}
                           </button>
                         </div>
                       )}

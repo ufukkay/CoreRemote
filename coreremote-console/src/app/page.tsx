@@ -58,12 +58,18 @@ export default function Home() {
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"devices" | "builder">("devices");
+  const [activeTab, setActiveTab] = useState<"devices" | "builder" | "updater">("devices");
   
   // Update state
   const [latestVersion, setLatestVersion] = useState("1.0.0");
   const [updateFileUrl, setUpdateFileUrl] = useState("");
-  const [updateProgress, setUpdateProgress] = useState<string | null>(null);
+  const [deviceUpdateProgress, setDeviceUpdateProgress] = useState<Record<string, string>>({});
+  const [releaseInfo, setReleaseInfo] = useState<{
+    releaseName: string;
+    publishedAt: string;
+    releaseNotes: string;
+    githubUrl: string;
+  } | null>(null);
   
   // Builder state
   const [builderTitle, setBuilderTitle] = useState("CoreRemote Destek");
@@ -101,7 +107,10 @@ export default function Home() {
 
     // Listen for agent update progress
     socketRef.current.on("agent_update_progress", (data) => {
-      setUpdateProgress(`${data.status}: ${data.message || ""}`);
+      setDeviceUpdateProgress(prev => ({
+        ...prev,
+        [data.deviceId]: `${data.status}: ${data.message || ""}`
+      }));
     });
 
     // Clean up
@@ -117,6 +126,12 @@ export default function Home() {
       const data = await res.json();
       setLatestVersion(data.latestVersion);
       setUpdateFileUrl(data.url);
+      setReleaseInfo({
+        releaseName: data.releaseName || "",
+        publishedAt: data.publishedAt || "",
+        releaseNotes: data.releaseNotes || "",
+        githubUrl: data.githubUrl || ""
+      });
     } catch (err) {
       console.error("Failed to check update info", err);
     }
@@ -203,7 +218,6 @@ export default function Home() {
     setActiveDeviceId(deviceId);
     setFps(0);
     setFrameSizeKB(0);
-    setUpdateProgress(null);
 
     // Find local device record for quick display
     const dev = devices.find(d => d.id === deviceId);
@@ -335,7 +349,23 @@ export default function Home() {
         deviceId,
         updateUrl: updateFileUrl
       });
-      setUpdateProgress("Güncelleme paketi gönderildi, sürüm yükseltiliyor...");
+      setDeviceUpdateProgress(prev => ({
+        ...prev,
+        [deviceId]: "İstek gönderildi, güncelleme başlatılıyor..."
+      }));
+    }
+  };
+
+  const triggerUpdateAllOutdated = () => {
+    const outdatedDevices = devices.filter(d => d.status === "online" && d.agent_version !== latestVersion);
+    if (outdatedDevices.length === 0) {
+      alert("Güncellenmesi gereken çevrimiçi cihaz bulunmamaktadır.");
+      return;
+    }
+    if (confirm(`${outdatedDevices.length} adet çevrimiçi cihazı en son sürüme (v${latestVersion}) yükseltmek istediğinize emin misiniz?`)) {
+      outdatedDevices.forEach(d => {
+        triggerUpdate(d.id);
+      });
     }
   };
 
@@ -394,6 +424,17 @@ export default function Home() {
             >
               <Settings size={14} />
               Ajan Özelleştirici
+            </button>
+            <button
+              onClick={() => setActiveTab("updater")}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-1.5 ${
+                activeTab === "updater" 
+                  ? "bg-[#21262d] text-[#f0f6fc] border border-[#30363d]" 
+                  : "text-[#8b949e] hover:text-[#f0f6fc]"
+              }`}
+            >
+              <UploadCloud size={14} />
+              Güncelleme Merkezi
             </button>
           </div>
         )}
@@ -558,7 +599,7 @@ export default function Home() {
                 </table>
               </div>
             </div>
-          ) : (
+          ) : activeTab === "builder" ? (
             // View 1.5: Custom Agent Builder
             <div className="flex flex-col gap-6">
               <div className="flex flex-col gap-1 border-b border-[#30363d] pb-4">
@@ -624,6 +665,211 @@ export default function Home() {
                   </div>
                 </div>
 
+              </div>
+            </div>
+          ) : (
+            // View 1.8: Güncelleme Merkezi
+            <div className="flex flex-col gap-6">
+              {/* Header Description */}
+              <div className="flex flex-col gap-1 border-b border-[#30363d] pb-4">
+                <h1 className="text-2xl font-semibold text-[#f0f6fc]">Güncelleme Merkezi</h1>
+                <p className="text-sm text-[#8b949e]">Uzak agent sürümlerini yönetin ve GitHub Releases üzerinden yayınlanan en son sürümleri dağıtın.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Sol Panel: Sürüm Bilgileri */}
+                <div className="md:col-span-1 flex flex-col gap-6">
+                  <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 flex flex-col gap-4">
+                    <h3 className="font-semibold text-sm text-[#f0f6fc] border-b border-[#30363d] pb-2 flex items-center gap-2">
+                      <UploadCloud size={16} className="text-[#56d364]" />
+                      Son GitHub Sürümü
+                    </h3>
+                    
+                    {releaseInfo ? (
+                      <div className="flex flex-col gap-3 text-xs">
+                        <div>
+                          <span className="text-[#8b949e] block">Yayın Adı</span>
+                          <span className="font-semibold text-sm text-[#58a6ff]">{releaseInfo.releaseName}</span>
+                        </div>
+                        <div>
+                          <span className="text-[#8b949e] block">Sürüm Etiketi</span>
+                          <span className="font-mono text-[11px] bg-[#21262d] border border-[#30363d] px-2 py-0.5 rounded text-[#c9d1d9] inline-block mt-0.5">
+                            v{latestVersion}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#8b949e] block">Yayınlanma Tarihi</span>
+                          <span className="font-medium text-[#c9d1d9]">
+                            {releaseInfo.publishedAt ? new Date(releaseInfo.publishedAt).toLocaleString("tr-TR") : "-"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#8b949e] block">İndirme Linki</span>
+                          <a 
+                            href={updateFileUrl} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            className="text-[#58a6ff] hover:underline break-all block mt-0.5"
+                          >
+                            CoreRemoteAgent.exe (GitHub)
+                          </a>
+                        </div>
+                        
+                        {releaseInfo.githubUrl && (
+                          <div className="mt-2">
+                            <a
+                              href={releaseInfo.githubUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-block bg-[#21262d] border border-[#30363d] hover:bg-[#30363d] text-[#c9d1d9] font-medium px-3 py-1.5 rounded text-center transition-all w-full"
+                            >
+                              GitHub'da Görüntüle
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-[#8b949e] py-4 text-center">
+                        Sürüm bilgisi yükleniyor...
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 flex flex-col gap-4">
+                    <h3 className="font-semibold text-sm text-[#f0f6fc] border-b border-[#30363d] pb-2 flex items-center gap-2">
+                      <Terminal size={16} className="text-[#58a6ff]" />
+                      Sürüm Değişiklik Notları
+                    </h3>
+                    <div className="bg-[#0d1117] border border-[#30363d] p-3 rounded text-xs font-mono text-[#8b949e] max-h-[250px] overflow-y-auto whitespace-pre-wrap">
+                      {releaseInfo?.releaseNotes || "Sürüm notu girilmemiş."}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sağ Panel: Ajan Dağılımı ve Toplu Güncelleme */}
+                <div className="md:col-span-2 flex flex-col gap-6">
+                  {/* Durum Kartları */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 flex items-center gap-4">
+                      <div className="bg-[#238636]/15 p-3 rounded-full text-[#56d364]">
+                        <CheckCircle size={20} />
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-[#f0f6fc]">
+                          {devices.filter(d => d.agent_version === latestVersion).length}
+                        </div>
+                        <div className="text-xs text-[#8b949e]">Güncel Sürüm Ajanlar</div>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 flex items-center gap-4">
+                      <div className="bg-[#f1e05a]/15 p-3 rounded-full text-[#f1e05a]">
+                        <UploadCloud size={20} />
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-[#f0f6fc]">
+                          {devices.filter(d => d.agent_version !== latestVersion).length}
+                        </div>
+                        <div className="text-xs text-[#8b949e]">Güncelleme Bekleyenler</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Toplu İşlem Butonu */}
+                  <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5 flex flex-col gap-3">
+                    <h3 className="font-semibold text-sm text-[#f0f6fc]">Toplu Sürüm Güncelleme</h3>
+                    <p className="text-xs text-[#8b949e]">
+                      Çevrimiçi (Online) durumda olan ve en son sürümü (v{latestVersion}) kullanmayan tüm aktif ajanları tek tıkla güncelleyebilirsiniz. Ajanlar güncellemeyi arka planda kurarak otomatik olarak tekrar bağlanacaktır.
+                    </p>
+                    <div>
+                      <button
+                        onClick={triggerUpdateAllOutdated}
+                        disabled={devices.filter(d => d.status === "online" && d.agent_version !== latestVersion).length === 0}
+                        className={`inline-flex items-center gap-2 font-medium text-xs px-4 py-2.5 rounded transition-all ${
+                          devices.filter(d => d.status === "online" && d.agent_version !== latestVersion).length > 0
+                            ? "bg-[#238636] hover:bg-[#2ea043] text-white cursor-pointer"
+                            : "bg-[#30363d] text-[#8b949e] cursor-not-allowed"
+                        }`}
+                      >
+                        <UploadCloud size={14} />
+                        Çevrimiçi Eski Sürümleri Güncelle ({devices.filter(d => d.status === "online" && d.agent_version !== latestVersion).length})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Detaylı Ajan Sürüm Listesi */}
+                  <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+                    <div className="p-4 border-b border-[#30363d] bg-[#1f242c] font-semibold text-xs text-[#f0f6fc]">
+                      Ajan Sürüm Dağılımı ve Güncelleme İlerlemesi
+                    </div>
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-[#161b22] border-b border-[#30363d] text-[#8b949e] font-medium">
+                          <th className="p-3">Cihaz Adı / Hostname</th>
+                          <th className="p-3">Mevcut Sürüm</th>
+                          <th className="p-3">Durum</th>
+                          <th className="p-3">Güncelleme Durumu</th>
+                          <th className="p-3 text-right">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {devices.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-6 text-center text-[#8b949e]">
+                              Kayıtlı aktif cihaz bulunamadı.
+                            </td>
+                          </tr>
+                        ) : (
+                          devices.map(d => {
+                            const isOutdated = d.agent_version !== latestVersion;
+                            const progress = deviceUpdateProgress[d.id];
+                            return (
+                              <tr key={d.id} className="border-b border-[#30363d] hover:bg-[#21262d]/30 transition-all">
+                                <td className="p-3 font-semibold text-[#f0f6fc]">
+                                  {d.hostname}
+                                  <span className="block text-[10px] text-[#8b949e] font-mono">{d.id}</span>
+                                </td>
+                                <td className="p-3">
+                                  <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded border ${
+                                    isOutdated 
+                                      ? "bg-[#f1e05a]/5 text-[#f1e05a] border-[#f1e05a]/30" 
+                                      : "bg-[#238636]/5 text-[#56d364] border-[#238636]/30"
+                                  }`}>
+                                    v{d.agent_version}
+                                  </span>
+                                </td>
+                                <td className="p-3">
+                                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+                                    d.status === "online" ? "text-[#56d364]" : "text-[#f85149]"
+                                  }`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${
+                                      d.status === "online" ? "bg-[#56d364]" : "bg-[#f85149]"
+                                    }`} />
+                                    {d.status === "online" ? "Online" : "Offline"}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono text-[10px] text-[#8b949e]">
+                                  {progress || (isOutdated ? "Güncelleme Bekliyor" : "Güncel")}
+                                </td>
+                                <td className="p-3 text-right">
+                                  {isOutdated && d.status === "online" && (
+                                    <button
+                                      onClick={() => triggerUpdate(d.id)}
+                                      className="bg-[#238636] hover:bg-[#2ea043] text-white text-[10px] font-semibold px-2.5 py-1 rounded transition-all flex items-center gap-1 inline-flex"
+                                    >
+                                      <UploadCloud size={10} />
+                                      Güncelle
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             </div>
           )
@@ -773,9 +1019,9 @@ export default function Home() {
                     </button>
                   )}
 
-                  {updateProgress && (
+                  {activeDeviceId && deviceUpdateProgress[activeDeviceId] && (
                     <div className="mt-2 p-2 bg-[#21262d] border border-[#30363d] rounded text-[11px] text-[#8b949e] break-all">
-                      {updateProgress}
+                      {deviceUpdateProgress[activeDeviceId]}
                     </div>
                   )}
                 </div>

@@ -169,7 +169,7 @@ wss.on("connection", (ws, req) => {
 
         case "update_status":
           console.log(`[AGENT UPDATE] ${deviceId}: ${data.status} - ${data.message || ""}`);
-          io.to(`device:${deviceId}`).emit("agent_update_progress", data);
+          io.emit("agent_update_progress", { deviceId, status: data.status, message: data.message });
           break;
 
         default:
@@ -280,7 +280,11 @@ app.get("/api/update/check", async (req, res) => {
 
     res.json({
       latestVersion,
-      url: downloadUrl
+      url: downloadUrl,
+      releaseName: data.name || data.tag_name || "Sürüm Bilgisi Yok",
+      publishedAt: data.published_at || "",
+      releaseNotes: data.body || "Sürüm notu eklenmemiş.",
+      githubUrl: data.html_url || "https://github.com/ufukkay/CoreRemote"
     });
   } catch (err) {
     console.error("Error checking updates from GitHub:", err.message);

@@ -65,6 +65,8 @@ export default function Home() {
   const [serverVersion, setServerVersion] = useState("1.0.0");
   const [updatingServer, setUpdatingServer] = useState(false);
   const [serverUpdateCountdown, setServerUpdateCountdown] = useState(15);
+  const [showServerUpdateModal, setShowServerUpdateModal] = useState(false);
+  const [checkingServerUpdate, setCheckingServerUpdate] = useState(false);
   const [updateFileUrl, setUpdateFileUrl] = useState("");
   const [deviceUpdateProgress, setDeviceUpdateProgress] = useState<Record<string, string>>({});
   const [releaseInfo, setReleaseInfo] = useState<{
@@ -373,10 +375,22 @@ export default function Home() {
     }
   };
 
-  const triggerServerUpdate = async () => {
-    if (!confirm("Sinyalizasyon Sunucusu ve Yönetim Paneli en son GitHub sürümüne güncellenecektir. Bu işlem sırasında bağlantınız kısa süreliğine kesilebilir. Devam etmek istiyor musunuz?")) {
-      return;
+  const checkAndUpdateServerFlow = async () => {
+    setCheckingServerUpdate(true);
+    try {
+      // Yeniden GitHub güncellemelerini denetle (en güncel sürüm notlarını çekmek için)
+      await checkLatestVersion();
+      setShowServerUpdateModal(true);
+    } catch (err) {
+      console.error(err);
+      alert("Güncellemeler kontrol edilirken hata oluştu.");
+    } finally {
+      setCheckingServerUpdate(false);
     }
+  };
+
+  const executeServerUpdate = async () => {
+    setShowServerUpdateModal(false);
     setUpdatingServer(true);
     setServerUpdateCountdown(15);
     try {
@@ -434,6 +448,83 @@ export default function Home() {
           </p>
           <div className="bg-[#161b22] border border-[#30363d] px-4 py-2 rounded text-xs font-mono text-[#56d364]">
             Sayfa yenileniyor: {serverUpdateCountdown} saniye...
+          </div>
+        </div>
+      )}
+      {showServerUpdateModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg max-w-lg w-full flex flex-col overflow-hidden shadow-2xl">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-[#30363d] bg-[#1f242c] flex items-center justify-between">
+              <h3 className="font-semibold text-sm text-[#f0f6fc] flex items-center gap-2">
+                <Server size={16} className="text-[#58a6ff]" />
+                Sunucu Güncelleme Onayı
+              </h3>
+              <button 
+                onClick={() => setShowServerUpdateModal(false)}
+                className="text-[#8b949e] hover:text-[#f0f6fc] text-xs font-semibold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+              <div className="bg-[#21262d] border border-[#30363d] p-3 rounded flex items-center justify-between text-xs">
+                <div>
+                  <span className="text-[#8b949e] block">Mevcut Sunucu</span>
+                  <span className="font-mono text-sm text-[#c9d1d9]">v{serverVersion}</span>
+                </div>
+                <div className="text-[#8b949e] font-semibold">➔</div>
+                <div className="text-right">
+                  <span className="text-[#8b949e] block">Kurulacak Sürüm</span>
+                  <span className="font-mono text-sm text-[#56d364]">v{latestVersion}</span>
+                </div>
+              </div>
+
+              {serverVersion === latestVersion && (
+                <div className="bg-[#f1e05a]/10 border border-[#f1e05a]/30 text-[#f1e05a] p-3 rounded text-xs flex items-start gap-2">
+                  <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+                  <div>
+                    Sisteminiz zaten en son sürümde (v{serverVersion}) görünüyor. Güncellemeye devam ederseniz sunucu dosyaları GitHub'dan tekrar çekilecek ve Next.js konsolu sıfırdan yeniden derlenecektir.
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-semibold text-[#8b949e] flex items-center gap-1.5">
+                  <Terminal size={14} className="text-[#58a6ff]" />
+                  Yeni Sürüm Değişiklik Notları ({releaseInfo?.releaseName || `v${latestVersion}`}):
+                </span>
+                <div className="bg-[#0d1117] border border-[#30363d] p-3 rounded text-xs font-mono text-[#8b949e] max-h-[200px] overflow-y-auto whitespace-pre-wrap text-left">
+                  {releaseInfo?.releaseNotes || "Bu sürüm için açıklama notu girilmemiş."}
+                </div>
+              </div>
+
+              <div className="text-xs text-[#8b949e] bg-[#238636]/10 border border-[#238636]/20 p-3 rounded flex items-start gap-2 text-left">
+                <CheckCircle size={16} className="text-[#56d364] flex-shrink-0 mt-0.5" />
+                <div>
+                  Onay vermenizin ardından güncellemeler otomatik olarak arka planda kurulacaktır. İşlem yaklaşık 15 saniye sürer ve tamamlandığında sayfa otomatik yenilenir.
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-[#30363d] bg-[#161b22] flex justify-end gap-3">
+              <button
+                onClick={() => setShowServerUpdateModal(false)}
+                className="bg-[#21262d] border border-[#30363d] hover:bg-[#30363d] text-[#c9d1d9] font-medium px-4 py-2 rounded text-xs cursor-pointer transition-all"
+              >
+                İptal Et
+              </button>
+              <button
+                onClick={executeServerUpdate}
+                className="bg-[#238636] hover:bg-[#2ea043] text-white font-medium px-4 py-2 rounded text-xs cursor-pointer transition-all flex items-center gap-1.5"
+              >
+                <RefreshCw size={12} />
+                Güncellemeyi Başlat
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -760,19 +851,30 @@ export default function Home() {
                       {serverVersion !== latestVersion ? (
                         <div className="mt-2">
                           <button
-                            onClick={triggerServerUpdate}
-                            className="w-full bg-[#238636] hover:bg-[#2ea043] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5"
+                            onClick={checkAndUpdateServerFlow}
+                            disabled={checkingServerUpdate}
+                            className="w-full bg-[#238636] hover:bg-[#2ea043] text-white font-medium py-2 rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            <RefreshCw size={14} className="animate-spin-slow" />
-                            Sunucuyu Şimdi Güncelle (v{latestVersion})
+                            <RefreshCw size={14} className={checkingServerUpdate ? "animate-spin" : ""} />
+                            {checkingServerUpdate ? "Güncelleme Denetleniyor..." : `Sunucuyu Şimdi Güncelle (v${latestVersion})`}
                           </button>
                           <p className="text-[10px] text-[#8b949e] mt-1 text-center">
                             Sunucu güncellemeyi arka planda çekip otomatik olarak yeniden başlayacaktır.
                           </p>
                         </div>
                       ) : (
-                        <div className="mt-2 text-center text-[#56d364] text-[11px] bg-[#238636]/10 border border-[#238636]/30 py-2 rounded font-medium">
-                          ✓ Sunucu Sisteminiz Güncel
+                        <div className="mt-2 flex flex-col gap-2">
+                          <div className="text-center text-[#56d364] text-[11px] bg-[#238636]/10 border border-[#238636]/30 py-2 rounded font-medium">
+                            ✓ Sunucu Sisteminiz Güncel (v{serverVersion})
+                          </div>
+                          <button
+                            onClick={checkAndUpdateServerFlow}
+                            disabled={checkingServerUpdate}
+                            className="w-full border border-[#30363d] hover:bg-[#21262d] text-[#8b949e] hover:text-[#f0f6fc] font-medium py-1.5 rounded transition-all text-[11px] cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <RefreshCw size={12} className={checkingServerUpdate ? "animate-spin" : ""} />
+                            {checkingServerUpdate ? "Kontrol Ediliyor..." : "Sistemi Yeniden Derle / Force Update"}
+                          </button>
                         </div>
                       )}
                     </div>

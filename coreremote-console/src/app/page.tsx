@@ -67,6 +67,7 @@ export default function Home() {
   const [serverUpdateCountdown, setServerUpdateCountdown] = useState(15);
   const [showServerUpdateModal, setShowServerUpdateModal] = useState(false);
   const [checkingServerUpdate, setCheckingServerUpdate] = useState(false);
+  const [serverUpdateError, setServerUpdateError] = useState<string | null>(null);
   const [updateFileUrl, setUpdateFileUrl] = useState("");
   const [deviceUpdateProgress, setDeviceUpdateProgress] = useState<Record<string, string>>({});
   const [releaseInfo, setReleaseInfo] = useState<{
@@ -377,22 +378,22 @@ export default function Home() {
 
   const checkAndUpdateServerFlow = async () => {
     setCheckingServerUpdate(true);
+    setServerUpdateError(null);
     try {
-      // Yeniden GitHub güncellemelerini denetle (en güncel sürüm notlarını çekmek için)
+      // Yeniden GitHub güncellemelerini denetle
       await checkLatestVersion();
       setShowServerUpdateModal(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert("Güncellemeler kontrol edilirken hata oluştu.");
+      setServerUpdateError(err.message || "Güncellemeler kontrol edilirken bir hata oluştu.");
+      setShowServerUpdateModal(true); // Open modal anyway to display the error inside the UI!
     } finally {
       setCheckingServerUpdate(false);
     }
   };
 
   const executeServerUpdate = async () => {
-    setShowServerUpdateModal(false);
-    setUpdatingServer(true);
-    setServerUpdateCountdown(15);
+    setServerUpdateError(null);
     try {
       const res = await fetch(`${SERVER_HOST}/api/admin/update-server`, { method: "POST" });
       const data = await res.json();
@@ -400,10 +401,15 @@ export default function Home() {
         throw new Error(data.error || "Sunucu güncellemesi başlatılamadı.");
       }
     } catch (err: any) {
-      alert(`Hata: ${err.message}`);
-      setUpdatingServer(false);
-      return;
+      console.error(err);
+      setServerUpdateError(err.message || "Sunucuyla iletişim kurulurken bir hata oluştu.");
+      return; // Keep modal open and show error inside the modal UI
     }
+
+    // Success -> close modal and trigger countdown overlay
+    setShowServerUpdateModal(false);
+    setUpdatingServer(true);
+    setServerUpdateCountdown(15);
 
     // Geri sayım başlat
     const interval = setInterval(() => {
@@ -470,6 +476,18 @@ export default function Home() {
 
             {/* Modal Body */}
             <div className="p-5 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+              {serverUpdateError && (
+                <div className="bg-[#da3637]/10 border border-[#da3637]/30 text-[#f85149] p-3 rounded text-xs flex items-start gap-2 text-left">
+                  <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+                  <div className="font-mono text-[10px] break-all leading-normal flex-1">
+                    <strong>Hata Detayı:</strong>
+                    <div className="mt-1 bg-black/40 p-2 rounded border border-[#da3637]/20 max-h-[150px] overflow-y-auto whitespace-pre-wrap select-all">
+                      {serverUpdateError}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="bg-[#21262d] border border-[#30363d] p-3 rounded flex items-center justify-between text-xs">
                 <div>
                   <span className="text-[#8b949e] block">Mevcut Sunucu</span>

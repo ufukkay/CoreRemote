@@ -7,7 +7,7 @@ const url = require("url");
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const fs = require("fs");
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 
 const PORT = process.env.PORT || 5000;
 const SERVER_VERSION = "1.0.0";
@@ -473,17 +473,22 @@ app.get("/api/builder/download-exe", (req, res) => {
 app.all("/api/admin/update-server", (req, res) => {
   console.log("[SERVER UPDATE] Sunucu otomatik güncelleme tetiklendi!");
 
-  // Bağımsız (detached) PowerShell süreci başlat
-  const cmd = 'Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command \\"cd C:\\CoreRemote; git pull; .\\deploy-iis.ps1\\"" -WindowStyle Hidden';
+  // Bağımsız (detached) PowerShell süreci başlat (çift tırnak kaçış hatasını önlemek için spawn kullanılır)
+  const pCmd = `Start-Process powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command "cd C:\\CoreRemote; git pull; .\\deploy-iis.ps1"' -WindowStyle Hidden`;
   
-  exec(`powershell.exe -Command "${cmd}"`, (err, stdout, stderr) => {
-    if (err) {
-      console.error("[SERVER UPDATE ERR] Güncelleme başlatılamadı:", stderr || err.message);
-      return res.status(500).json({ success: false, error: stderr || err.message });
-    }
+  try {
+    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", pCmd], {
+      detached: true,
+      stdio: "ignore"
+    });
+    child.unref();
+
     console.log("[SERVER UPDATE] Güncelleme arka planda başarıyla başlatıldı.");
     res.json({ success: true, message: "Sunucu güncelleme süreci başlatıldı. Servisler 15 saniye içinde yeniden yüklenecektir." });
-  });
+  } catch (err) {
+    console.error("[SERVER UPDATE ERR] Güncelleme başlatılamadı:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Sunucuyu Başlat
